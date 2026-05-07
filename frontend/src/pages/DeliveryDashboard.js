@@ -93,7 +93,7 @@ const DeliveryDashboard = () => {
             <div>
               <span className="font-bold text-lg" data-testid={`order-num-${order.order_number}`}>#{order.order_number}</span>
               <Badge className="ml-2 text-xs" variant="outline">
-                {order.status === 'ready_to_deliver' ? 'Ready' : order.status === 'picked_up' ? 'Picked Up' : order.status}
+                {order.status === 'ready_to_deliver' ? 'Ready to Deliver' : order.status === 'picked_up' ? 'Picked Up' : order.status}
               </Badge>
             </div>
             <span className="text-sm text-gray-500">

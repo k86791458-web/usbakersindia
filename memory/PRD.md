@@ -16,7 +16,15 @@ Then fix a list of feature/bug items reported by the user.
 - Auto-seeded super admin verified (`admin@usbakers.com` / `admin123`)
 
 ### May 7, 2026 — Feature/bug fixes (this iteration)
-**Backend (`/app/backend/server.py`)**
+
+**Iteration 2 — Image Editor + Delivery flow verified**
+- ImageEditor (Crop + Pen) wired into both `NewOrder` and `ManageOrders` Edit dialog.
+- Delivery user seeded (`delivery1@usbakers.com` / `delivery123`); seed_data.py also adds `delivery2@usbakers.com`.
+- Delivery flow verified end-to-end: login → see available orders → accept → "My Orders" → Mark Delivered. Manager-side assignment via `/api/delivery/assign-order` also verified.
+- DeliveryDashboard label corrected from "Ready" to "Ready to Deliver".
+- Tests: 7/7 delivery pytests pass; full frontend smoke green (mobile delivery dashboard at 480x900 + image editor on both pages).
+
+**Iteration 1 — Backend (`/app/backend/server.py`)**
 - HEIC/HEIF auto-conversion in `POST /api/upload-image` via `pillow_heif`
 - Approval-based delete:
   - `DELETE /api/orders/{id}?reason=...` (reason required, super admin direct delete; others raise approval request)
