@@ -13,6 +13,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Upload, Plus, X, Mic, Square, Play, Trash2, RefreshCw, AlertTriangle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import ImageEditor from '../components/ImageEditor';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -48,6 +49,8 @@ const NewOrder = () => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [pendingImageFile, setPendingImageFile] = useState(null);
   const [selectedZone, setSelectedZone] = useState(null);
   
   // Voice recording state
@@ -74,6 +77,7 @@ const NewOrder = () => {
     occasion: '',
     flavour: '',
     size_pounds: '',
+    base_size: '',
     cake_image_url: '',
     secondary_images: [],
     name_on_cake: '',
@@ -210,26 +214,33 @@ const NewOrder = () => {
   const handleImageUpload = async (e, type = 'primary') => {
     const file = e.target.files[0];
     if (!file) return;
+    // Open the editor first so user can crop / annotate before upload
+    setPendingImageFile({ file, type });
+    setEditorOpen(true);
+    e.target.value = '';
+  };
 
+  const uploadEditedImage = async (blob, type) => {
     setUploadingImage(true);
     const formDataUpload = new FormData();
-    formDataUpload.append('file', file);
+    formDataUpload.append('file', new File([blob], `edited_${Date.now()}.png`, { type: 'image/png' }));
 
     try {
       const response = await axios.post(`${API}/upload-image`, formDataUpload, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
+      const url = response.data.url || response.data.file_url;
 
       if (type === 'primary') {
-        setFormData({ ...formData, cake_image_url: response.data.url });
+        setFormData({ ...formData, cake_image_url: url });
       } else {
         setFormData({
           ...formData,
-          secondary_images: [...formData.secondary_images, response.data.url]
+          secondary_images: [...formData.secondary_images, url]
         });
       }
     } catch (error) {
-      setError('Image upload failed');
+      setError(error.response?.data?.detail || 'Image upload failed');
     } finally {
       setUploadingImage(false);
     }
@@ -303,93 +314,81 @@ const NewOrder = () => {
 
   const handleSubmit = async (e, isPunchOrder = false) => {
     e.preventDefault();
-    
+
     // Prevent double submission (sync check via ref)
     if (submittingRef.current || loading) return;
     submittingRef.current = true;
-    
-    // Validate for punch orders
-    if (isPunchOrder) {
-      const errors = [];
-      if (!formData.customer_info.name) errors.push('Customer name');
-      if (!formData.customer_info.phone) errors.push('Customer phone');
-      if (formData.customer_info.phone && formData.customer_info.phone.length !== 10) errors.push('Phone must be 10 digits');
-      if (!formData.customer_info.gender) errors.push('Gender');
-      if (!formData.order_taken_by) errors.push('Order taken by');
-      if (!formData.occasion) errors.push('Occasion');
-      if (!formData.flavour) errors.push('Flavour');
-      if (!formData.delivery_date) errors.push('Delivery date');
-      if (!formData.delivery_time) errors.push('Delivery time');
-      if (!formData.total_amount || formData.total_amount <= 0) errors.push('Cake amount');
-      if (formData.needs_delivery && !formData.delivery_address) errors.push('Delivery address');
-      if (formData.needs_delivery && !formData.zone_id) errors.push('Delivery zone');
-      
-      if (errors.length > 0) {
-        setError(`Missing required fields: ${errors.join(', ')}`);
-        setLoading(false);
-        return;
-      }
-    }
-    
     setError('');
     setSuccess('');
     setLoading(true);
 
-    // Validate phone number length
-    if (formData.customer_info.phone && formData.customer_info.phone.length !== 10) {
-      setError('Phone number must be exactly 10 digits');
+    // ALWAYS reset state on any exit path so the button never gets stuck
+    const finishWithError = (msg) => {
+      setError(msg);
       setLoading(false);
       submittingRef.current = false;
-      return;
-    }
-
-    // Validate gender
-    if (!formData.customer_info.gender) {
-      setError('Gender is required');
-      setLoading(false);
-      submittingRef.current = false;
-      return;
-    }
-
-    // Validate delivery date/time is not in the past
-    if (formData.delivery_date && formData.delivery_time) {
-      const now = new Date();
-      const [hours, minutes] = formData.delivery_time.split(':').map(Number);
-      const deliveryDateTime = new Date(formData.delivery_date + 'T00:00:00');
-      deliveryDateTime.setHours(hours, minutes, 0, 0);
-      if (deliveryDateTime <= now) {
-        setError('Delivery date and time cannot be in the past. Please select a future date/time.');
-        setLoading(false);
-        submittingRef.current = false;
-        return;
-      }
-    } else if (formData.delivery_date) {
-      const today = new Date().toISOString().split('T')[0];
-      if (formData.delivery_date < today) {
-        setError('Delivery date cannot be in the past.');
-        setLoading(false);
-        submittingRef.current = false;
-        return;
-      }
-    }
-
-    // Validate
-    if (!formData.cake_image_url) {
-      setError('Cake image is mandatory');
-      setLoading(false);
-      return;
-    }
-
-    if (formData.needs_delivery && !formData.delivery_address) {
-      setError('Delivery address is required for delivery orders');
-      setLoading(false);
-      return;
-    }
+    };
 
     try {
+      // Validate for punch orders
+      if (isPunchOrder) {
+        const errors = [];
+        if (!formData.customer_info.name) errors.push('Customer name');
+        if (!formData.customer_info.phone) errors.push('Customer phone');
+        if (formData.customer_info.phone && formData.customer_info.phone.length !== 10) errors.push('Phone must be 10 digits');
+        if (!formData.customer_info.gender) errors.push('Gender');
+        if (!formData.order_taken_by) errors.push('Order taken by');
+        if (!formData.occasion) errors.push('Occasion');
+        if (!formData.flavour) errors.push('Flavour');
+        if (!formData.delivery_date) errors.push('Delivery date');
+        if (!formData.delivery_time) errors.push('Delivery time');
+        if (!formData.total_amount || formData.total_amount <= 0) errors.push('Cake amount');
+        if (formData.needs_delivery && !formData.delivery_address) errors.push('Delivery address');
+        if (formData.needs_delivery && !formData.zone_id) errors.push('Delivery zone');
+
+        if (errors.length > 0) {
+          return finishWithError(`Missing required fields: ${errors.join(', ')}`);
+        }
+      }
+
+      // Validate phone number length
+      if (formData.customer_info.phone && formData.customer_info.phone.length !== 10) {
+        return finishWithError('Phone number must be exactly 10 digits');
+      }
+
+      // Validate gender
+      if (!formData.customer_info.gender) {
+        return finishWithError('Gender is required');
+      }
+
+      // Validate delivery date/time is not in the past
+      if (formData.delivery_date && formData.delivery_time) {
+        const now = new Date();
+        const [hours, minutes] = formData.delivery_time.split(':').map(Number);
+        const deliveryDateTime = new Date(formData.delivery_date + 'T00:00:00');
+        deliveryDateTime.setHours(hours, minutes, 0, 0);
+        if (deliveryDateTime <= now) {
+          return finishWithError('Delivery date and time cannot be in the past. Please select a future date/time.');
+        }
+      } else if (formData.delivery_date) {
+        const today = new Date().toISOString().split('T')[0];
+        if (formData.delivery_date < today) {
+          return finishWithError('Delivery date cannot be in the past.');
+        }
+      }
+
+      // Validate
+      if (!formData.cake_image_url) {
+        return finishWithError('Cake image is mandatory');
+      }
+
+      if (formData.needs_delivery && !formData.delivery_address) {
+        return finishWithError('Delivery address is required for delivery orders');
+      }
+
       const response = await axios.post(`${API}/orders?is_punch_order=${isPunchOrder}`, formData);
       const createdOrder = response.data;
-      
+
       if (isPunchOrder) {
         setSuccess(`Punch Order Created! Order #: ${createdOrder.order_number}`);
         alert(`Punch Order Created!\n\nOrder #: ${createdOrder.order_number}\n\nStatus: Pending (waiting for payment threshold)\n\nIMPORTANT: Add Order # in PetPooja comment field.`);
@@ -400,9 +399,9 @@ const NewOrder = () => {
       }
     } catch (error) {
       setError(error.response?.data?.detail || 'Failed to create order');
-      submittingRef.current = false;
     } finally {
       setLoading(false);
+      submittingRef.current = false;
     }
   };
 
@@ -592,17 +591,69 @@ const NewOrder = () => {
                   />
                 </div>
                 <div>
-                  <Label>Birthday</Label>
-                  <Input
-                    type="date"
-                    value={formData.customer_info.birthday}
-                    onChange={(e) =>
-                      setFormData({
-                        ...formData,
-                        customer_info: { ...formData.customer_info, birthday: e.target.value }
-                      })
-                    }
-                  />
+                  <Label>Birthday (year optional)</Label>
+                  <div className="flex gap-2">
+                    <Select
+                      value={(formData.customer_info.birthday || '').split('-')[1] || ''}
+                      onValueChange={(month) => {
+                        const parts = (formData.customer_info.birthday || '----').split('-');
+                        const year = parts[0] || '';
+                        const day = parts[2] || '';
+                        const newVal = year || month || day ? `${year}-${month}-${day}` : '';
+                        setFormData({
+                          ...formData,
+                          customer_info: { ...formData.customer_info, birthday: newVal }
+                        });
+                      }}
+                    >
+                      <SelectTrigger data-testid="bday-month-trigger"><SelectValue placeholder="Month" /></SelectTrigger>
+                      <SelectContent>
+                        {['01','02','03','04','05','06','07','08','09','10','11','12'].map((m) => (
+                          <SelectItem key={m} value={m}>{m}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={(formData.customer_info.birthday || '').split('-')[2] || ''}
+                      onValueChange={(day) => {
+                        const parts = (formData.customer_info.birthday || '----').split('-');
+                        const year = parts[0] || '';
+                        const month = parts[1] || '';
+                        const newVal = year || month || day ? `${year}-${month}-${day}` : '';
+                        setFormData({
+                          ...formData,
+                          customer_info: { ...formData.customer_info, birthday: newVal }
+                        });
+                      }}
+                    >
+                      <SelectTrigger data-testid="bday-day-trigger"><SelectValue placeholder="Day" /></SelectTrigger>
+                      <SelectContent>
+                        {Array.from({length: 31}, (_, i) => String(i + 1).padStart(2, '0')).map((d) => (
+                          <SelectItem key={d} value={d}>{d}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      data-testid="bday-year-input"
+                      type="number"
+                      placeholder="YYYY (optional)"
+                      min="1900"
+                      max={new Date().getFullYear()}
+                      value={(formData.customer_info.birthday || '').split('-')[0] || ''}
+                      onChange={(e) => {
+                        const year = e.target.value;
+                        const parts = (formData.customer_info.birthday || '----').split('-');
+                        const month = parts[1] || '';
+                        const day = parts[2] || '';
+                        const newVal = year || month || day ? `${year}-${month}-${day}` : '';
+                        setFormData({
+                          ...formData,
+                          customer_info: { ...formData.customer_info, birthday: newVal }
+                        });
+                      }}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">Year is optional. Stored as YYYY-MM-DD or --MM-DD when year is blank.</p>
                 </div>
                 <div>
                   <Label>Gender *</Label>
@@ -804,6 +855,18 @@ const NewOrder = () => {
                   />
                 </div>
                 <div>
+                  <Label>Base Size (Pounds)</Label>
+                  <Input
+                    type="number"
+                    step="0.5"
+                    min="0.5"
+                    placeholder="Optional – appears on production sheet"
+                    value={formData.base_size || ''}
+                    onChange={(e) => setFormData({ ...formData, base_size: e.target.value ? parseFloat(e.target.value) : '' })}
+                    data-testid="base-size-input"
+                  />
+                </div>
+                <div>
                   <Label>Name on Cake</Label>
                   <Input
                     value={formData.name_on_cake}
@@ -980,7 +1043,7 @@ const NewOrder = () => {
                       <span className="text-xs text-gray-500 mt-2">Upload</span>
                       <input
                         type="file"
-                        accept="image/*"
+                        accept="image/*,.heic,.heif,image/heic,image/heif"
                         className="hidden"
                         onChange={(e) => handleImageUpload(e, 'primary')}
                         disabled={uploadingImage}
@@ -1013,7 +1076,7 @@ const NewOrder = () => {
                     <Plus className="h-6 w-6 text-gray-400" />
                     <input
                       type="file"
-                      accept="image/*"
+                      accept="image/*,.heic,.heif,image/heic,image/heif"
                       className="hidden"
                       onChange={(e) => handleImageUpload(e, 'secondary')}
                       disabled={uploadingImage}
@@ -1071,6 +1134,17 @@ const NewOrder = () => {
           )}
         </form>
       </div>
+      <ImageEditor
+        open={editorOpen}
+        file={pendingImageFile?.file || null}
+        onCancel={() => { setEditorOpen(false); setPendingImageFile(null); }}
+        onConfirm={async (blob) => {
+          const t = pendingImageFile?.type || 'primary';
+          setEditorOpen(false);
+          await uploadEditedImage(blob, t);
+          setPendingImageFile(null);
+        }}
+      />
     </LayoutWithSidebar>
   );
 };

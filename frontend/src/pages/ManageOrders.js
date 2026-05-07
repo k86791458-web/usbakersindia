@@ -384,17 +384,23 @@ const ManageOrders = () => {
   };
   
   const handleDeleteOrder = async (order) => {
-    if (!window.confirm(`Are you sure you want to delete order ${order.order_number}?`)) {
+    const reason = window.prompt(
+      `Provide a reason to delete order #${order.order_number}.\n` +
+      `(Super Admin: deletes immediately. Others: a delete request is sent for super admin approval.)`,
+      ''
+    );
+    if (reason === null) return;            // cancelled
+    if (!reason.trim()) {
+      alert('A reason is required to delete an order.');
       return;
     }
-    
+
     try {
-      await axios.delete(
-        `${API_URL}/api/orders/${order.id}`,
+      const res = await axios.delete(
+        `${API_URL}/api/orders/${order.id}?reason=${encodeURIComponent(reason.trim())}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      
-      setMessage({ type: 'success', text: 'Order deleted successfully' });
+      setMessage({ type: 'success', text: res.data?.message || 'Done' });
       fetchOrders();
     } catch (error) {
       console.error('Error deleting order:', error);
@@ -2021,7 +2027,7 @@ const ManageOrders = () => {
                     <div>
                       <input
                         type="file"
-                        accept="image/*,.heic,.heif"
+                        accept="image/*,.heic,.heif,image/heic,image/heif"
                         className="text-sm"
                         onChange={async (e) => {
                           const file = e.target.files[0];
@@ -2029,13 +2035,14 @@ const ManageOrders = () => {
                           const formData = new FormData();
                           formData.append('file', file);
                           try {
-                            const res = await axios.post(`${API_URL}/api/upload`, formData, {
+                            const res = await axios.post(`${API_URL}/api/upload-image`, formData, {
                               headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
                             });
-                            setEditFormData({...editFormData, cake_image_url: res.data.file_url});
+                            const url = res.data.url || res.data.file_url;
+                            setEditFormData({...editFormData, cake_image_url: url});
                             setMessage({ type: 'success', text: 'Image updated' });
                           } catch (err) {
-                            setMessage({ type: 'error', text: 'Failed to upload image' });
+                            setMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to upload image' });
                           }
                         }}
                       />

@@ -24,6 +24,13 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.pdfgen import canvas
+from PIL import Image as PILImage
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    HEIC_SUPPORTED = True
+except Exception:
+    HEIC_SUPPORTED = False
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -111,12 +118,14 @@ class SystemSettings(BaseModel):
     id: str = "system_settings"  # Singleton
     minimum_payment_percentage: float = 20.0  # Default 20%
     birthday_mandatory: bool = False  # NEW: Toggle birthday field mandatory/optional
+    max_orders_per_time_slot: int = 0  # 0 = unlimited; otherwise hard cap per outlet+date+time
     updated_by: Optional[str] = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class SystemSettingsUpdate(BaseModel):
     minimum_payment_percentage: float
     birthday_mandatory: Optional[bool] = None
+    max_orders_per_time_slot: Optional[int] = None
 
 # NEW: Payment Threshold per Branch
 class BranchPaymentThreshold(BaseModel):
@@ -383,6 +392,7 @@ class Order(BaseModel):
     occasion: Optional[str] = None
     flavour: str
     size_pounds: float
+    base_size: Optional[float] = None  # Base cake size (lbs) used for production sheet
     cake_image_url: str  # Customer reference image
     actual_cake_image_url: Optional[str] = None  # Photo uploaded by kitchen after completion
     secondary_images: List[str] = []
@@ -426,6 +436,8 @@ class Order(BaseModel):
     is_deleted: bool = False
     delete_requested_by: Optional[str] = None
     delete_approved_by: Optional[str] = None
+    delete_reason: Optional[str] = None
+    delete_status: Optional[str] = None  # "pending" | "approved" | "rejected"
     
     # Delivery Tracking
     assigned_delivery_partner: Optional[str] = None
@@ -457,6 +469,7 @@ class OrderCreate(BaseModel):
     occasion: Optional[str] = None
     flavour: str
     size_pounds: float
+    base_size: Optional[float] = None
     cake_image_url: str
     secondary_images: List[str] = []
     name_on_cake: Optional[str] = None
@@ -965,6 +978,8 @@ async def update_system_settings(
     # Add birthday_mandatory if provided
     if settings_data.birthday_mandatory is not None:
         update_data["birthday_mandatory"] = settings_data.birthday_mandatory
+    if settings_data.max_orders_per_time_slot is not None:
+        update_data["max_orders_per_time_slot"] = max(0, int(settings_data.max_orders_per_time_slot))
     
     await db.system_settings.update_one(
         {"id": "system_settings"},
@@ -1647,26 +1662,41 @@ async def upload_image(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user)
 ):
-    """Upload an image and return the URL"""
+    """Upload an image (JPG/PNG/HEIC/HEIF) and return the URL. Auto-converts HEIC->JPEG."""
     try:
-        # Validate file type
-        if not file.content_type.startswith('image/'):
+        filename_lower = (file.filename or '').lower()
+        is_heic = filename_lower.endswith('.heic') or filename_lower.endswith('.heif') \
+            or (file.content_type or '').lower() in ('image/heic', 'image/heif')
+
+        if not is_heic and file.content_type and not file.content_type.startswith('image/'):
             raise HTTPException(status_code=400, detail="File must be an image")
-        
-        # Generate unique filename
-        file_extension = file.filename.split('.')[-1]
-        unique_filename = f"{uuid.uuid4()}.{file_extension}"
-        file_path = ROOT_DIR / "uploads" / unique_filename
-        
-        # Save file
+
         contents = await file.read()
-        with open(file_path, 'wb') as f:
-            f.write(contents)
-        
-        # Return URL (relative path)
+
+        if is_heic:
+            if not HEIC_SUPPORTED:
+                raise HTTPException(status_code=400, detail="HEIC support not available on server")
+            try:
+                img = PILImage.open(BytesIO(contents)).convert('RGB')
+                unique_filename = f"{uuid.uuid4()}.jpg"
+                file_path = ROOT_DIR / "uploads" / unique_filename
+                img.save(file_path, format='JPEG', quality=88)
+            except Exception as e:
+                logger.error(f"HEIC convert failed: {e}")
+                raise HTTPException(status_code=400, detail="Failed to convert HEIC image")
+        else:
+            file_extension = (file.filename or 'img').split('.')[-1]
+            unique_filename = f"{uuid.uuid4()}.{file_extension}"
+            file_path = ROOT_DIR / "uploads" / unique_filename
+            with open(file_path, 'wb') as f:
+                f.write(contents)
+
         image_url = f"/api/uploads/{unique_filename}"
-        return {"url": image_url, "filename": unique_filename}
-    
+        # Return both keys for frontend compatibility (some callers use file_url)
+        return {"url": image_url, "file_url": image_url, "filename": unique_filename}
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Image upload failed: {str(e)}")
         raise HTTPException(status_code=500, detail="Image upload failed")
@@ -1726,7 +1756,23 @@ async def create_order(
     outlet = await db.outlets.find_one({"id": order_data.outlet_id}, {"_id": 0})
     if not outlet:
         raise HTTPException(status_code=404, detail="Outlet not found")
-    
+
+    # Time-slot cap: prevent overbooking the same delivery time at this outlet
+    sys_settings = await db.system_settings.find_one({"id": "system_settings"}, {"_id": 0}) or {}
+    slot_limit = int(sys_settings.get('max_orders_per_time_slot') or 0)
+    if slot_limit > 0 and order_data.delivery_date and order_data.delivery_time:
+        existing_in_slot = await db.orders.count_documents({
+            "outlet_id": order_data.outlet_id,
+            "delivery_date": order_data.delivery_date,
+            "delivery_time": order_data.delivery_time,
+            "is_deleted": False,
+        })
+        if existing_in_slot >= slot_limit:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Time slot {order_data.delivery_time} on {order_data.delivery_date} is fully booked ({existing_in_slot}/{slot_limit}). Pick another slot."
+            )
+
     # Calculate delivery charge if needed
     delivery_charge = 0.0
     if order_data.needs_delivery and order_data.zone_id:
@@ -1994,32 +2040,104 @@ async def get_manage_orders(
 @api_router.delete("/orders/{order_id}")
 async def delete_order(
     order_id: str,
-    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
+    reason: Optional[str] = None,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER, UserRole.FACTORY_MANAGER]))
 ):
-    """Mark order as deleted - Super admin and outlet admin can delete directly"""
+    """Delete an order. Super admin deletes directly; others raise an approval request with a reason."""
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
-    if current_user.role in [UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN]:
-        # Super admin and outlet admin can delete directly
+
+    if not reason or not reason.strip():
+        raise HTTPException(status_code=400, detail="A reason is required to delete this order")
+
+    if current_user.role == UserRole.SUPER_ADMIN:
+        # Super admin: direct delete (no approval required)
         await db.orders.update_one(
             {"id": order_id},
             {"$set": {
                 "is_deleted": True,
                 "deleted_at": datetime.now(timezone.utc).isoformat(),
                 "deleted_by": current_user.id,
-                "delete_approved_by": current_user.id
+                "delete_approved_by": current_user.id,
+                "delete_requested_by": current_user.id,
+                "delete_reason": reason.strip(),
+                "delete_status": "approved",
             }}
         )
         return {"message": "Order deleted successfully"}
     else:
-        # Others need approval
+        # Others: raise an approval request, order stays visible
         await db.orders.update_one(
             {"id": order_id},
-            {"$set": {"delete_requested_by": current_user.id}}
+            {"$set": {
+                "delete_requested_by": current_user.id,
+                "delete_reason": reason.strip(),
+                "delete_status": "pending",
+            }}
         )
-        return {"message": "Delete request submitted for approval"}
+        return {"message": "Delete request submitted for super admin approval"}
+
+
+@api_router.post("/orders/{order_id}/approve-delete")
+async def approve_delete_order(
+    order_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Super admin approves a pending delete request"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("delete_status") != "pending":
+        raise HTTPException(status_code=400, detail="No pending delete request for this order")
+
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "is_deleted": True,
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+            "deleted_by": current_user.id,
+            "delete_approved_by": current_user.id,
+            "delete_status": "approved",
+        }}
+    )
+    return {"message": "Delete approved"}
+
+
+@api_router.post("/orders/{order_id}/reject-delete")
+async def reject_delete_order(
+    order_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Super admin rejects a pending delete request"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("delete_status") != "pending":
+        raise HTTPException(status_code=400, detail="No pending delete request for this order")
+
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "delete_status": "rejected",
+            "delete_requested_by": None,
+            "delete_reason": None,
+        }}
+    )
+    return {"message": "Delete request rejected"}
+
+
+@api_router.get("/orders/delete-requests")
+async def get_delete_requests(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get all orders with a pending delete request"""
+    orders = await db.orders.find(
+        {"delete_status": "pending", "is_deleted": False},
+        {"_id": 0}
+    ).sort("updated_at", -1).to_list(500)
+    orders = await enrich_orders_with_names(orders)
+    return orders
 
 @api_router.get("/orders/deleted")
 async def get_deleted_orders(
@@ -2707,7 +2825,38 @@ async def get_kitchen_orders(
     
     orders = await db.orders.find(query, {"_id": 0}).sort("delivery_time", 1).to_list(1000)
     orders = await enrich_orders_with_names(orders)
+    orders = await enrich_orders_with_kitchen_deadline(orders)
     
+    return orders
+
+async def enrich_orders_with_kitchen_deadline(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Compute kitchen_ready_deadline = delivery_time - outlet.ready_time_buffer_minutes"""
+    if not orders:
+        return orders
+    outlet_ids = list({o.get('outlet_id') for o in orders if o.get('outlet_id')})
+    outlet_docs = await db.outlets.find({"id": {"$in": outlet_ids}}, {"_id": 0, "id": 1, "ready_time_buffer_minutes": 1}).to_list(500)
+    buffer_map = {d['id']: int(d.get('ready_time_buffer_minutes') or 30) for d in outlet_docs}
+    for o in orders:
+        buf = buffer_map.get(o.get('outlet_id'), 30)
+        d_date = o.get('delivery_date')
+        d_time = o.get('delivery_time')
+        deadline = None
+        if d_date and d_time:
+            try:
+                dt = None
+                for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %I:%M %p"):
+                    try:
+                        dt = datetime.strptime(f"{d_date} {d_time}", fmt)
+                        break
+                    except ValueError:
+                        continue
+                if dt is not None:
+                    deadline_dt = dt - timedelta(minutes=buf)
+                    deadline = deadline_dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                deadline = None
+        o['kitchen_ready_deadline'] = deadline
+        o['ready_time_buffer_minutes'] = buf
     return orders
 
 @api_router.post("/kitchen/orders/mark-ready")
@@ -2781,6 +2930,116 @@ async def get_kitchen_summary(
         "delivered": delivered_count,
         "pending_production": confirmed_count  # Orders needing to be made
     }
+
+
+@api_router.get("/factory/production-sheet")
+async def get_production_sheet(
+    date: Optional[str] = None,
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.FACTORY_MANAGER, UserRole.KITCHEN]))
+):
+    """Production sheet grouped by base size + flavour for kitchen planning."""
+    query = {"is_deleted": False, "is_hold": False}
+    if date:
+        query['delivery_date'] = date
+    else:
+        query['delivery_date'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    if outlet_id:
+        query['outlet_id'] = outlet_id
+    query['status'] = {"$in": [OrderStatus.CONFIRMED.value, OrderStatus.IN_PROGRESS.value, OrderStatus.READY.value]}
+
+    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_time", 1).to_list(2000)
+    orders = await enrich_orders_with_kitchen_deadline(orders)
+
+    groups: Dict[str, Dict[str, Any]] = {}
+    for o in orders:
+        base = o.get('base_size') if o.get('base_size') is not None else o.get('size_pounds')
+        flav = o.get('flavour') or 'Unknown'
+        key = f"{base}|{flav}"
+        if key not in groups:
+            groups[key] = {
+                "base_size": base,
+                "flavour": flav,
+                "count": 0,
+                "total_pounds": 0.0,
+                "orders": [],
+            }
+        groups[key]["count"] += 1
+        groups[key]["total_pounds"] += float(o.get('size_pounds') or 0)
+        groups[key]["orders"].append({
+            "order_number": o.get('order_number'),
+            "size_pounds": o.get('size_pounds'),
+            "delivery_time": o.get('delivery_time'),
+            "kitchen_ready_deadline": o.get('kitchen_ready_deadline'),
+            "name_on_cake": o.get('name_on_cake'),
+            "customer_name": (o.get('customer_info') or {}).get('name'),
+        })
+    grouped = sorted(groups.values(), key=lambda g: (g["base_size"] or 0, g["flavour"]))
+    return {
+        "date": query['delivery_date'],
+        "total_orders": len(orders),
+        "groups": grouped,
+    }
+
+
+@api_router.get("/orders/time-slot-capacity")
+async def time_slot_capacity(
+    outlet_id: str,
+    delivery_date: str,
+    delivery_time: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Return current order count for the given outlet/date/time slot, plus the configured limit."""
+    settings = await db.system_settings.find_one({"id": "system_settings"}, {"_id": 0}) or {}
+    limit = int(settings.get('max_orders_per_time_slot') or 0)
+    count = await db.orders.count_documents({
+        "outlet_id": outlet_id,
+        "delivery_date": delivery_date,
+        "delivery_time": delivery_time,
+        "is_deleted": False,
+    })
+    return {"count": count, "limit": limit, "exceeded": bool(limit and count >= limit)}
+
+
+@api_router.post("/customers/import")
+async def import_customers(
+    payload: Dict[str, Any],
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN]))
+):
+    """Bulk import customers from Excel. Stores them in 'customer_directory' collection."""
+    rows = payload.get('rows') or []
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=400, detail="rows must be an array")
+    inserted = 0
+    updated = 0
+    errors: List[str] = []
+    for r in rows:
+        phone = (str(r.get('phone') or r.get('Phone') or '')).strip()
+        name = (str(r.get('name') or r.get('Name') or '')).strip()
+        if not phone or not name:
+            errors.append(f"Skipping row missing name/phone: {r}")
+            continue
+        doc = {
+            "name": name,
+            "phone": phone,
+            "email": r.get('email') or r.get('Email'),
+            "birthday": r.get('birthday') or r.get('Birthday'),
+            "gender": r.get('gender') or r.get('Gender'),
+            "address": r.get('address') or r.get('Address'),
+            "outlet_id": r.get('outlet_id') or r.get('Outlet') or current_user.outlet_id,
+            "imported_by": current_user.id,
+            "imported_at": datetime.now(timezone.utc).isoformat(),
+        }
+        existing = await db.customer_directory.find_one({"phone": phone}, {"_id": 0})
+        if existing:
+            await db.customer_directory.update_one({"phone": phone}, {"$set": doc})
+            updated += 1
+        else:
+            doc["id"] = str(uuid.uuid4())
+            await db.customer_directory.insert_one(doc)
+            inserted += 1
+    return {"inserted": inserted, "updated": updated, "errors": errors}
+
 
 @api_router.get("/factory/orders")
 async def get_factory_orders(

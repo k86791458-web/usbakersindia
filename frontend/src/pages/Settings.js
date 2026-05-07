@@ -19,7 +19,8 @@ const Settings = () => {
   // System Settings
   const [systemSettings, setSystemSettings] = useState({
     minimum_payment_percentage: 20,
-    birthday_mandatory: false
+    birthday_mandatory: false,
+    max_orders_per_time_slot: 0
   });
 
   // Branch Thresholds
@@ -339,6 +340,27 @@ const Settings = () => {
                   birthday_mandatory: checked
                 })}
               />
+            </div>
+
+            {/* Max Orders Per Time Slot */}
+            <div className="space-y-2">
+              <Label>Max Orders per Delivery Time Slot</Label>
+              <div className="flex gap-4 items-center">
+                <Input
+                  type="number"
+                  min="0"
+                  value={systemSettings.max_orders_per_time_slot ?? 0}
+                  onChange={(e) => setSystemSettings({
+                    ...systemSettings,
+                    max_orders_per_time_slot: parseInt(e.target.value || '0', 10)
+                  })}
+                  className="max-w-xs"
+                  data-testid="max-orders-per-slot-input"
+                />
+                <span className="text-sm text-gray-600">
+                  0 = unlimited. Otherwise, prevents booking the same outlet+date+time slot more than this many orders.
+                </span>
+              </div>
             </div>
 
             <Button
