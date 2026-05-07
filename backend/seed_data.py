@@ -74,6 +74,8 @@ async def seed():
         {"email": "outlet@usbakers.com", "name": "Outlet Admin", "phone": "9800000002", "role": "outlet_admin", "password": "outlet123", "outlet_id": outlets[0]["id"]},
         {"email": "manager@usbakers.com", "name": "Order Manager", "phone": "9800000003", "role": "order_manager", "password": "manager123", "outlet_id": outlets[0]["id"]},
         {"email": "factory@usbakers.com", "name": "Factory Manager", "phone": "9800000004", "role": "factory_manager", "password": "factory123", "outlet_id": None},
+        {"email": "delivery1@usbakers.com", "name": "Delivery Rider 1", "phone": "9800000005", "role": "delivery", "password": "delivery123", "outlet_id": outlets[0]["id"]},
+        {"email": "delivery2@usbakers.com", "name": "Delivery Rider 2", "phone": "9800000006", "role": "delivery", "password": "delivery123", "outlet_id": outlets[1]["id"]},
     ]
     # Remove old non-admin users
     await db.users.delete_many({"role": {"$ne": "super_admin"}})

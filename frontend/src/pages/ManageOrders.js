@@ -36,6 +36,7 @@ import {
 import { Mic } from 'lucide-react';
 import axios from 'axios';
 import * as XLSX from 'xlsx';
+import ImageEditor from '../components/ImageEditor';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -108,6 +109,8 @@ const ManageOrders = () => {
   // New state for edit functionality
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editFormData, setEditFormData] = useState(null);
+  const [editImageEditorOpen, setEditImageEditorOpen] = useState(false);
+  const [pendingEditFile, setPendingEditFile] = useState(null);
   
   // Camera capture for Ready to Deliver
   const [cameraDialogOpen, setCameraDialogOpen] = useState(false);
@@ -2029,21 +2032,12 @@ const ManageOrders = () => {
                         type="file"
                         accept="image/*,.heic,.heif,image/heic,image/heif"
                         className="text-sm"
-                        onChange={async (e) => {
+                        onChange={(e) => {
                           const file = e.target.files[0];
                           if (!file) return;
-                          const formData = new FormData();
-                          formData.append('file', file);
-                          try {
-                            const res = await axios.post(`${API_URL}/api/upload-image`, formData, {
-                              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
-                            });
-                            const url = res.data.url || res.data.file_url;
-                            setEditFormData({...editFormData, cake_image_url: url});
-                            setMessage({ type: 'success', text: 'Image updated' });
-                          } catch (err) {
-                            setMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to upload image' });
-                          }
+                          setPendingEditFile(file);
+                          setEditImageEditorOpen(true);
+                          e.target.value = '';
                         }}
                       />
                       <p className="text-xs text-gray-500 mt-1">Upload new image to replace current one</p>
@@ -2267,6 +2261,30 @@ const ManageOrders = () => {
             </div>
           </DialogContent>
         </Dialog>
+
+        {/* Image editor dialog used by Edit Order's image picker */}
+        <ImageEditor
+          open={editImageEditorOpen}
+          file={pendingEditFile}
+          onCancel={() => { setEditImageEditorOpen(false); setPendingEditFile(null); }}
+          onConfirm={async (blob) => {
+            setEditImageEditorOpen(false);
+            try {
+              const formData = new FormData();
+              formData.append('file', new File([blob], `edited_${Date.now()}.png`, { type: 'image/png' }));
+              const res = await axios.post(`${API_URL}/api/upload-image`, formData, {
+                headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
+              });
+              const url = res.data.url || res.data.file_url;
+              setEditFormData((prev) => prev ? { ...prev, cake_image_url: url } : prev);
+              setMessage({ type: 'success', text: 'Image updated' });
+            } catch (err) {
+              setMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to upload image' });
+            } finally {
+              setPendingEditFile(null);
+            }
+          }}
+        />
       </div>
     </LayoutWithSidebar>
   );
