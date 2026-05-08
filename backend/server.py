@@ -5584,3 +5584,116 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+# ==================== ACTIVITY LOGS ====================
+
+class ActivityLog(BaseModel):
+    """Comprehensive activity logging for all CRM actions"""
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    user_id: str
+    user_name: str
+    user_role: str
+    action_type: str  # order_created, order_updated, order_deleted, payment_recorded, status_changed, user_created, login, etc.
+    description: str  # Human-readable description
+    entity_type: Optional[str] = None  # order, user, outlet, payment, etc.
+    entity_id: Optional[str] = None  # ID of the affected entity
+    order_number: Optional[str] = None  # For order-related actions
+    outlet_id: Optional[str] = None
+    outlet_name: Optional[str] = None
+    ip_address: Optional[str] = None
+    before_data: Optional[Dict[str, Any]] = None  # State before change
+    after_data: Optional[Dict[str, Any]] = None  # State after change
+    metadata: Optional[Dict[str, Any]] = None  # Additional context
+
+# Helper function to create activity log
+async def create_activity_log(
+    user: User,
+    action_type: str,
+    description: str,
+    entity_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    order_number: Optional[str] = None,
+    outlet_id: Optional[str] = None,
+    before_data: Optional[Dict] = None,
+    after_data: Optional[Dict] = None,
+    metadata: Optional[Dict] = None,
+    ip_address: Optional[str] = None
+):
+    """Create an activity log entry"""
+    
+    outlet_name = None
+    if outlet_id:
+        outlet_doc = await db.outlets.find_one({"id": outlet_id}, {"_id": 0})
+        if outlet_doc:
+            outlet_name = outlet_doc.get('name')
+    
+    log = ActivityLog(
+        user_id=user.id,
+        user_name=user.name,
+        user_role=user.role.value,
+        action_type=action_type,
+        description=description,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        order_number=order_number,
+        outlet_id=outlet_id,
+        outlet_name=outlet_name,
+        ip_address=ip_address,
+        before_data=before_data,
+        after_data=after_data,
+        metadata=metadata
+    )
+    
+    log_dict = log.model_dump()
+    log_dict['timestamp'] = log_dict['timestamp'].isoformat()
+    
+    await db.activity_logs.insert_one(log_dict)
+    logger.info(f"Activity Log: {user.name} ({user.role}) - {description}")
+
+@api_router.get("/activity-logs")
+async def get_activity_logs(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user_id: Optional[str] = None,
+    action_type: Optional[str] = None,
+    outlet_id: Optional[str] = None,
+    limit: int = 1000,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get activity logs with filters (Super Admin only)"""
+    
+    query = {}
+    
+    if date_from:
+        try:
+            from_date = datetime.fromisoformat(date_from)
+            query['timestamp'] = {"$gte": from_date.isoformat()}
+        except:
+            pass
+    
+    if date_to:
+        try:
+            to_date = datetime.fromisoformat(date_to + 'T23:59:59')
+            if 'timestamp' in query:
+                query['timestamp']['$lte'] = to_date.isoformat()
+            else:
+                query['timestamp'] = {"$lte": to_date.isoformat()}
+        except:
+            pass
+    
+    if user_id:
+        query['user_id'] = user_id
+    
+    if action_type:
+        query['action_type'] = action_type
+    
+    if outlet_id:
+        query['outlet_id'] = outlet_id
+    
+    logs = await db.activity_logs.find(query, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
+    
+    return logs
+

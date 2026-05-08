@@ -275,6 +275,14 @@ const AppRoutes = () => {
           </ProtectedRoute>
         }
       />
+      <Route
+        path="/activity-logs"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <ActivityLogs />
+          </ProtectedRoute>
+        }
+      />
 
       <Route
         path="/"
