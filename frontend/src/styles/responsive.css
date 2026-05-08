@@ -1,0 +1,264 @@
+/* Responsive Design for US Bakers India - Mobile, Tablet, Laptop, Desktop, TV */
+
+/* ============================================
+   BASE RESPONSIVE UTILITIES
+   ============================================ */
+
+/* Ensure all images are responsive by default */
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Prevent horizontal scroll */
+body {
+  overflow-x: hidden;
+}
+
+/* Make tables responsive */
+.table-responsive {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ============================================
+   MOBILE FIRST (320px - 767px)
+   ============================================ */
+@media (max-width: 767px) {
+  /* Container adjustments */
+  .container {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  /* Form inputs full width on mobile */
+  input, select, textarea {
+    font-size: 16px !important; /* Prevents zoom on iOS */
+  }
+
+  /* Buttons full width on mobile */
+  .mobile-full-width {
+    width: 100% !important;
+  }
+
+  /* Stack columns on mobile */
+  .grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Reduce padding on mobile */
+  .p-6 {
+    padding: 1rem !important;
+  }
+
+  /* Hide desktop-only elements */
+  .hidden-mobile {
+    display: none !important;
+  }
+
+  /* Make sidebar collapsible on mobile */
+  aside {
+    position: fixed;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    z-index: 50;
+  }
+
+  aside.open {
+    transform: translateX(0);
+  }
+
+  /* Tables scroll horizontally on mobile */
+  table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
+  /* Card adjustments */
+  .card {
+    margin-bottom: 1rem;
+  }
+
+  /* Text size adjustments */
+  h1 {
+    font-size: 1.5rem !important;
+  }
+
+  h2 {
+    font-size: 1.25rem !important;
+  }
+
+  h3 {
+    font-size: 1.125rem !important;
+  }
+}
+
+/* ============================================
+   TABLET (768px - 1023px)
+   ============================================ */
+@media (min-width: 768px) and (max-width: 1023px) {
+  /* Container adjustments */
+  .container {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+
+  /* 2-column grid on tablets */
+  .grid-cols-4 {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+
+  /* Hide tablet-only elements when needed */
+  .hidden-tablet {
+    display: none !important;
+  }
+
+  /* Sidebar width adjustment */
+  aside {
+    width: 200px;
+  }
+}
+
+/* ============================================
+   LAPTOP (1024px - 1439px)
+   ============================================ */
+@media (min-width: 1024px) and (max-width: 1439px) {
+  .container {
+    max-width: 1024px;
+  }
+
+  /* Standard desktop layout */
+  .grid-cols-4 {
+    grid-template-columns: repeat(3, 1fr) !important;
+  }
+}
+
+/* ============================================
+   DESKTOP (1440px - 1919px)
+   ============================================ */
+@media (min-width: 1440px) and (max-width: 1919px) {
+  .container {
+    max-width: 1280px;
+  }
+
+  /* Full grid layout */
+  .grid-cols-4 {
+    grid-template-columns: repeat(4, 1fr) !important;
+  }
+}
+
+/* ============================================
+   LARGE SCREENS / TV (1920px+)
+   ============================================ */
+@media (min-width: 1920px) {
+  .container {
+    max-width: 1536px;
+  }
+
+  /* Larger text for TV viewing distance */
+  body {
+    font-size: 18px;
+  }
+
+  h1 {
+    font-size: 3rem !important;
+  }
+
+  h2 {
+    font-size: 2.5rem !important;
+  }
+
+  h3 {
+    font-size: 2rem !important;
+  }
+
+  /* Larger buttons for TV */
+  button {
+    padding: 1rem 2rem !important;
+    font-size: 1.125rem !important;
+  }
+
+  /* Larger cards */
+  .card {
+    padding: 2rem !important;
+  }
+
+  /* Wider sidebar for TV */
+  aside {
+    width: 300px;
+  }
+
+  /* Kitchen Dashboard - Large display mode */
+  .kitchen-order-card {
+    min-height: 200px;
+    font-size: 1.25rem;
+  }
+}
+
+/* ============================================
+   PRINT STYLES
+   ============================================ */
+@media print {
+  /* Hide navigation and non-essential elements */
+  aside, .no-print, button {
+    display: none !important;
+  }
+
+  /* Full width for print */
+  main {
+    width: 100% !important;
+    margin: 0 !important;
+  }
+
+  /* Black and white for print */
+  * {
+    color: black !important;
+    background: white !important;
+  }
+}
+
+/* ============================================
+   TOUCH DEVICE OPTIMIZATIONS
+   ============================================ */
+@media (hover: none) and (pointer: coarse) {
+  /* Larger tap targets for touch */
+  button, a, input[type="checkbox"], input[type="radio"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Better spacing for touch */
+  .gap-2 {
+    gap: 0.75rem !important;
+  }
+
+  /* Disable hover effects on touch devices */
+  *:hover {
+    background-color: inherit !important;
+  }
+}
+
+/* ============================================
+   ORIENTATION SPECIFIC
+   ============================================ */
+@media (orientation: landscape) and (max-height: 500px) {
+  /* Compact layout for landscape mobile */
+  .navbar {
+    padding: 0.5rem;
+  }
+
+  h1 {
+    font-size: 1.25rem !important;
+  }
+}
+
+/* ============================================
+   HIGH DPI DISPLAYS (Retina)
+   ============================================ */
+@media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
+  /* Sharper images for retina */
+  img {
+    image-rendering: -webkit-optimize-contrast;
+  }
+}
