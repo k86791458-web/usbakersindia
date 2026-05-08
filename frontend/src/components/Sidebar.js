@@ -4,12 +4,15 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { LayoutDashboard, ShoppingCart, Clock, Store, Users, MapPin, Settings, LogOut, Menu, X, MessageSquare, List, Receipt, Truck, CreditCard, RefreshCw, Navigation, TrendingUp, Webhook, Wallet, ImageIcon, Factory, Trash2, FileText, Activity } from 'lucide-react';
 import { useState } from 'react';
+import { useLogoutConfirm } from './ConfirmDialog';
 
 const Sidebar = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
+  
+  const { showConfirm, LogoutConfirmDialog } = useLogoutConfirm(logout);
 
   const isSuperAdmin = user?.role === 'super_admin';
 
@@ -79,6 +82,7 @@ const Sidebar = () => {
 
   return (
     <>
+      <LogoutConfirmDialog />
       {/* Sidebar */}
       <div
         className={`fixed left-0 top-0 h-screen bg-white border-r shadow-sm transition-all duration-300 z-50 ${
@@ -142,7 +146,7 @@ const Sidebar = () => {
               </div>
               <Button
                 variant="outline"
-                onClick={logout}
+                onClick={showConfirm}
                 className="w-full"
                 size="sm"
                 data-testid="logout-button"
@@ -153,7 +157,7 @@ const Sidebar = () => {
             </div>
           ) : (
             <button
-              onClick={logout}
+              onClick={showConfirm}
               className="w-full flex justify-center p-2 hover:bg-gray-100 rounded"
               data-testid="logout-button"
             >
