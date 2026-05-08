@@ -29,6 +29,9 @@ import CakeImageReport from './pages/CakeImageReport';
 import FactoryDashboard from './pages/FactoryDashboard';
 import DeletedOrders from './pages/DeletedOrders';
 import ChangesLog from './pages/ChangesLog';
+import WhatsAppTemplates from './pages/WhatsAppTemplates';
+import PetPoojaOrders from './pages/PetPoojaOrders';
+import ActivityLogs from './pages/ActivityLogs';
 import '@/App.css';
 
 const AppRoutes = () => {
