@@ -391,7 +391,7 @@ class Order(BaseModel):
     # Order Details
     occasion: Optional[str] = None
     flavour: str
-    size_pounds: float
+    size_pounds: Optional[float] = None
     base_size: Optional[float] = None  # Base cake size (lbs) used for production sheet
     cake_image_url: str  # Customer reference image
     actual_cake_image_url: Optional[str] = None  # Photo uploaded by kitchen after completion
@@ -468,7 +468,7 @@ class OrderCreate(BaseModel):
     zone_id: Optional[str] = None
     occasion: Optional[str] = None
     flavour: str
-    size_pounds: float
+    size_pounds: Optional[float] = None
     base_size: Optional[float] = None
     cake_image_url: str
     secondary_images: List[str] = []
@@ -1796,7 +1796,6 @@ async def create_order(
         order_data.delivery_date,
         order_data.delivery_time,
         order_data.flavour,
-        order_data.size_pounds > 0,
         order_data.cake_image_url,
         total_amount > 0
     ])

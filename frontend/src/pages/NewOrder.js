@@ -601,8 +601,8 @@ const NewOrder = () => {
                   />
                 </div>
                 <div>
-                  <Label>Birthday (year optional)</Label>
-                  <div className="flex gap-2">
+                  <Label>Birthday (optional)</Label>
+                  <div className="flex gap-2 items-center">
                     <Select
                       value={(formData.customer_info.birthday || '').split('-')[1] || ''}
                       onValueChange={(month) => {
@@ -646,7 +646,7 @@ const NewOrder = () => {
                     <Input
                       data-testid="bday-year-input"
                       type="number"
-                      placeholder="YYYY (optional)"
+                      placeholder="YYYY"
                       min="1900"
                       max={new Date().getFullYear()}
                       value={(formData.customer_info.birthday || '').split('-')[0] || ''}
@@ -662,8 +662,20 @@ const NewOrder = () => {
                         });
                       }}
                     />
+                    {formData.customer_info.birthday && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setFormData({ ...formData, customer_info: { ...formData.customer_info, birthday: '' } })}
+                        data-testid="bday-clear-button"
+                        title="Clear birthday"
+                      >
+                        Clear
+                      </Button>
+                    )}
                   </div>
-                  <p className="text-xs text-gray-500 mt-1">Year is optional. Stored as YYYY-MM-DD or --MM-DD when year is blank.</p>
+                  <p className="text-xs text-gray-500 mt-1">Entirely optional. You can fill any combination (e.g., only month/day) or leave blank.</p>
                 </div>
                 <div>
                   <Label>Gender *</Label>
@@ -852,7 +864,7 @@ const NewOrder = () => {
                   </Select>
                 </div>
                 <div>
-                  <Label>Size (Pounds) *</Label>
+                  <Label>Size (Pounds)</Label>
                   <Input
                     required
                     type="number"
