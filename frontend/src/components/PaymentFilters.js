@@ -118,12 +118,12 @@ export const PaymentFilters = ({ onFilterChange, outlets = [] }) => {
                   <CreditCard className="h-4 w-4" />
                   Payment Method
                 </Label>
-                <Select value={filters.paymentMethod} onValueChange={(value) => handleFilterChange('paymentMethod', value)}>
+                <Select value={filters.paymentMethod || 'all'} onValueChange={(value) => handleFilterChange('paymentMethod', value === 'all' ? '' : value)}>
                   <SelectTrigger>
                     <SelectValue placeholder="All methods" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All methods</SelectItem>
+                    <SelectItem value="all">All methods</SelectItem>
                     <SelectItem value="cash">Cash</SelectItem>
                     <SelectItem value="card">Card</SelectItem>
                     <SelectItem value="upi">UPI</SelectItem>
@@ -137,12 +137,12 @@ export const PaymentFilters = ({ onFilterChange, outlets = [] }) => {
               {outlets.length > 0 && (
                 <div className="space-y-2">
                   <Label>Outlet</Label>
-                  <Select value={filters.outlet} onValueChange={(value) => handleFilterChange('outlet', value)}>
+                  <Select value={filters.outlet || 'all'} onValueChange={(value) => handleFilterChange('outlet', value === 'all' ? '' : value)}>
                     <SelectTrigger>
                       <SelectValue placeholder="All outlets" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">All outlets</SelectItem>
+                      <SelectItem value="all">All outlets</SelectItem>
                       {outlets.map(outlet => (
                         <SelectItem key={outlet.id} value={outlet.id}>{outlet.name}</SelectItem>
                       ))}

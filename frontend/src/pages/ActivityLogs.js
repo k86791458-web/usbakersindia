@@ -233,12 +233,12 @@ const ActivityLogs = () => {
 
               <div className="space-y-2">
                 <Label>User</Label>
-                <Select value={filters.user_id} onValueChange={(value) => setFilters({...filters, user_id: value})}>
+                <Select value={filters.user_id || 'all'} onValueChange={(value) => setFilters({...filters, user_id: value === 'all' ? '' : value})}>
                   <SelectTrigger>
                     <SelectValue placeholder="All Users" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All Users</SelectItem>
+                    <SelectItem value="all">All Users</SelectItem>
                     {users.map(u => (
                       <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
                     ))}
@@ -248,12 +248,12 @@ const ActivityLogs = () => {
 
               <div className="space-y-2">
                 <Label>Action Type</Label>
-                <Select value={filters.action_type} onValueChange={(value) => setFilters({...filters, action_type: value})}>
+                <Select value={filters.action_type || 'all'} onValueChange={(value) => setFilters({...filters, action_type: value === 'all' ? '' : value})}>
                   <SelectTrigger>
                     <SelectValue placeholder="All Actions" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All Actions</SelectItem>
+                    <SelectItem value="all">All Actions</SelectItem>
                     <SelectItem value="order_created">Order Created</SelectItem>
                     <SelectItem value="order_updated">Order Updated</SelectItem>
                     <SelectItem value="order_deleted">Order Deleted</SelectItem>
@@ -270,12 +270,12 @@ const ActivityLogs = () => {
 
               <div className="space-y-2">
                 <Label>Outlet</Label>
-                <Select value={filters.outlet_id} onValueChange={(value) => setFilters({...filters, outlet_id: value})}>
+                <Select value={filters.outlet_id || 'all'} onValueChange={(value) => setFilters({...filters, outlet_id: value === 'all' ? '' : value})}>
                   <SelectTrigger>
                     <SelectValue placeholder="All Outlets" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All Outlets</SelectItem>
+                    <SelectItem value="all">All Outlets</SelectItem>
                     {outlets.map(o => (
                       <SelectItem key={o.id} value={o.id}>{o.name}</SelectItem>
                     ))}

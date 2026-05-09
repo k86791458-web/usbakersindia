@@ -190,12 +190,12 @@ export const OrderFilters = ({
                     <Tag className="h-4 w-4" />
                     Order Status
                   </Label>
-                  <Select value={filters.status} onValueChange={(value) => handleFilterChange('status', value)}>
+                  <Select value={filters.status || 'all'} onValueChange={(value) => handleFilterChange('status', value === 'all' ? '' : value)}>
                     <SelectTrigger>
                       <SelectValue placeholder="All statuses" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">All statuses</SelectItem>
+                      <SelectItem value="all">All statuses</SelectItem>
                       <SelectItem value="pending">Pending</SelectItem>
                       <SelectItem value="on_hold">On Hold</SelectItem>
                       <SelectItem value="confirmed">Confirmed</SelectItem>
@@ -218,12 +218,12 @@ export const OrderFilters = ({
                     <MapPin className="h-4 w-4" />
                     Outlet
                   </Label>
-                  <Select value={filters.outlet} onValueChange={(value) => handleFilterChange('outlet', value)}>
+                  <Select value={filters.outlet || 'all'} onValueChange={(value) => handleFilterChange('outlet', value === 'all' ? '' : value)}>
                     <SelectTrigger>
                       <SelectValue placeholder="All outlets" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">All outlets</SelectItem>
+                      <SelectItem value="all">All outlets</SelectItem>
                       {outlets.map(outlet => (
                         <SelectItem key={outlet.id} value={outlet.id}>
                           {outlet.name}
@@ -241,12 +241,12 @@ export const OrderFilters = ({
                     <DollarSign className="h-4 w-4" />
                     Payment Status
                   </Label>
-                  <Select value={filters.paymentStatus} onValueChange={(value) => handleFilterChange('paymentStatus', value)}>
+                  <Select value={filters.paymentStatus || 'all'} onValueChange={(value) => handleFilterChange('paymentStatus', value === 'all' ? '' : value)}>
                     <SelectTrigger>
                       <SelectValue placeholder="All payment statuses" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">All payment statuses</SelectItem>
+                      <SelectItem value="all">All payment statuses</SelectItem>
                       <SelectItem value="unpaid">Unpaid</SelectItem>
                       <SelectItem value="partial">Partially Paid</SelectItem>
                       <SelectItem value="paid">Fully Paid</SelectItem>
