@@ -391,6 +391,13 @@ const NewOrder = () => {
       const response = await axios.post(`${API}/orders?is_punch_order=${isPunchOrder}`, formData);
       const createdOrder = response.data;
 
+      // CRITICAL: Reset loading + lock BEFORE navigate so button never gets stuck.
+      // In production builds navigate() can unmount this component before a finally
+      // block commits its setState, leaving `loading=true` on the next mount and
+      // making the submit button permanently disabled (no click event ever fires).
+      setLoading(false);
+      submittingRef.current = false;
+
       if (isPunchOrder) {
         setSuccess(`Punch Order Created! Order #: ${createdOrder.order_number}`);
         alert(`Punch Order Created!\n\nOrder #: ${createdOrder.order_number}\n\nStatus: Pending (waiting for payment threshold)\n\nIMPORTANT: Add Order # in PetPooja comment field.`);
@@ -399,6 +406,7 @@ const NewOrder = () => {
         setSuccess(`Hold Order Created! Order #: ${createdOrder.order_number}`);
         navigate('/hold-orders');
       }
+      return;
     } catch (error) {
       setError(error.response?.data?.detail || 'Failed to create order');
     } finally {
