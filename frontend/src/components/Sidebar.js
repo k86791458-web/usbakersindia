@@ -87,7 +87,7 @@ const Sidebar = ({ collapsed: collapsedProp, setCollapsed: setCollapsedProp }) =
       <LogoutConfirmDialog />
       {/* Sidebar */}
       <div
-        className={`fixed left-0 top-0 h-screen bg-white border-r shadow-sm transition-all duration-300 z-50 ${
+        className={`fixed left-0 top-0 h-screen flex flex-col bg-white border-r shadow-sm transition-all duration-300 z-50 ${
           collapsed ? 'w-16' : 'w-64'
         }`}
       >

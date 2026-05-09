@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 2 retest after main agent applied 3 fixes (Sidebar flex flex-col, include_router moved to end, /dashboard/stats allows outlet_admin/order_manager/factory_manager). All three primary fixes are CONFIRMED WORKING in the UI. Login matrix, wrong-password, sidebar collapse, activity-logs page, and logout-button viewport visibility for both super_admin and outlet_admin all PASS. ONE NEW residual issue found: /api/dashboard/branch-summary still returns 403 for outlet_admin (separate endpoint from /dashboard/stats which now works), so the dashboard partially loads with a 403 console error for the branch-summary widget.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/dashboard/branch-summary", "issue": "Still returns 403 for outlet_admin while /api/dashboard/stats now returns 200. The fix added outlet_admin/order_manager/factory_manager to /stats but not to /branch-summary. UI: dashboard page renders and stats numbers load, but branch-summary section throws AxiosError 403 in console (no visible toast)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "outlet_admin dashboard data load", "issue": "/api/dashboard/branch-summary returns 403; dashboard otherwise loads fine. /api/dashboard/stats now correctly returns 200.", "affected_selectors": ["dashboard branch-summary section"]}
+    ],
+    "design_issues": []
+  },
+  "test_coverage_results": {
+    "TEST_1_super_admin_logout_visible": "PASS - logout button bounding box {x:16, y:1030, width:223, height:34}, bottom=1064 < viewport 1080. Long 24-item menu now scrolls inside ScrollArea. Fix `flex flex-col` confirmed in /app/frontend/src/components/Sidebar.js line 90.",
+    "TEST_2_outlet_admin_logout_visible": "PASS - logout button at y=1030, bottom=1064 (inside viewport).",
+    "TEST_3_sidebar_collapse": "PASS - 256px → 64px → 256px on toggle clicks.",
+    "TEST_4_activity_logs_200": "PASS - /api/activity-logs returns 200 (was 404 in iteration 1). Page loads with empty state 'No logs found' rendering cleanly. include_router fix confirmed.",
+    "TEST_5_outlet_admin_dashboard": "PARTIAL PASS - /api/dashboard/stats returns 200 (FIX CONFIRMED), but /api/dashboard/branch-summary still returns 403 for outlet_admin. No 403 toast/alert visible in UI; only console errors. Dashboard page itself renders.",
+    "TEST_6_login_matrix": "PASS - super_admin→/dashboard, outlet_admin→/dashboard, order_manager (manager@usbakers.com)→/dashboard, kitchen→/kitchen, delivery→/delivery, factory_manager→/factory.",
+    "TEST_7_wrong_password": "PASS - 'Invalid email or password' shown, stays on /login."
+  },
+  "test_report_links": [],
+  "action_items": [
+    "FIX (MED): Add OUTLET_ADMIN/ORDER_MANAGER/FACTORY_MANAGER to RBAC allowlist for /api/dashboard/branch-summary endpoint (same fix already applied to /api/dashboard/stats). Without this, outlet_admin sees 403 in console for branch-summary widget on dashboard."
+  ],
+  "critical_code_review_comments": [
+    "Dashboard endpoints /stats and /branch-summary should share a common RBAC dependency rather than each duplicating role lists — current state shows asymmetry where one was fixed but the other wasn't."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only run; observed via network)", "frontend": "100% on iteration-2-scoped fixes (3/3 fixes verified). 1 unrelated residual /branch-summary 403 carried over."},
+  "test_credentials": "Used /app/memory/test_credentials.md as-is.",
+  "seed_data_creation": "None.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All three iteration-2 scope fixes (Sidebar flex flex-col, /api/activity-logs registration, /api/dashboard/stats RBAC) are confirmed PASS via real Playwright UI tests at 1920x1080. Logout button is now visible inside the viewport for super_admin (24-item menu) and outlet_admin. Activity logs page renders with empty state and 200 response. /dashboard/stats now returns 200 for outlet_admin. Only residual issue is /api/dashboard/branch-summary still 403 for outlet_admin — recommend applying same RBAC fix to that endpoint as a quick follow-up. No retest of TV kitchen / sidebar-collapse-reflow / wrong-password / activity-logs Radix needed (per main agent instruction).",
+  "rca_of_the_issue": "The /branch-summary endpoint was not updated alongside /stats during iteration_2 fix. Reproduction: login as outlet@usbakers.com / outlet123 → /dashboard → DevTools Network shows GET /api/dashboard/branch-summary → 403. Console: 'Failed to fetch dashboard data: AxiosError'. Mitigation: in /app/backend/server.py, locate the /api/dashboard/branch-summary route and add OUTLET_ADMIN, ORDER_MANAGER, FACTORY_MANAGER to its allowed-roles set (mirror the /stats fix)."
+}

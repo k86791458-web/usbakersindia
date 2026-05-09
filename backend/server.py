@@ -4706,9 +4706,9 @@ async def get_branch_summary(
 
 @api_router.get("/dashboard/stats", response_model=DashboardStats)
 async def get_dashboard_stats(
-    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER, UserRole.FACTORY_MANAGER]))
 ):
-    """Get dashboard statistics (Super Admin only)"""
+    """Get dashboard statistics"""
     today = datetime.now(timezone.utc).date().isoformat()
     
     # Total orders today
@@ -5567,7 +5567,7 @@ async def delete_change_log(
     return {"message": "Deleted"}
 
 # Include the router in the main app
-app.include_router(api_router)
+# (Moved to bottom of file to register routes defined later, e.g. /activity-logs)
 
 # Serve uploaded images
 app.mount("/api/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
@@ -5696,3 +5696,6 @@ async def get_activity_logs(
     
     return logs
 
+
+# Register the api router AFTER all routes are defined
+app.include_router(api_router)
