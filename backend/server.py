@@ -275,7 +275,7 @@ class UserResponse(BaseModel):
     name: str
     phone: str
     role: UserRole
-    permissions: List[str]
+    permissions: List[str] = []
     incentive_percentage: float = 0.0
     outlet_id: Optional[str] = None
     outlet_scope: str = "specific"
