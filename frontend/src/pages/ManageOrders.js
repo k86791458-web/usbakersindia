@@ -129,6 +129,12 @@ const ManageOrders = () => {
   const [deliveryPersons, setDeliveryPersons] = useState([]);
   const [selectedDeliveryPerson, setSelectedDeliveryPerson] = useState('');
   const [assigning, setAssigning] = useState(false);
+
+  // Delete order with reason
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteOrder, setDeleteOrder] = useState(null);
+  const [deleteReason, setDeleteReason] = useState('');
+  const [deleting, setDeleting] = useState(false);
   
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -386,28 +392,35 @@ const ManageOrders = () => {
     }
   };
   
-  const handleDeleteOrder = async (order) => {
-    const reason = window.prompt(
-      `Provide a reason to delete order #${order.order_number}.\n` +
-      `(Super Admin: deletes immediately. Others: a delete request is sent for super admin approval.)`,
-      ''
-    );
-    if (reason === null) return;            // cancelled
-    if (!reason.trim()) {
-      alert('A reason is required to delete an order.');
+  const handleDeleteOrder = (order) => {
+    setDeleteOrder(order);
+    setDeleteReason('');
+    setDeleteDialogOpen(true);
+  };
+
+  const confirmDeleteOrder = async () => {
+    if (!deleteOrder) return;
+    if (!deleteReason.trim()) {
+      setMessage({ type: 'error', text: 'A reason is required to delete an order.' });
       return;
     }
 
+    setDeleting(true);
     try {
       const res = await axios.delete(
-        `${API_URL}/api/orders/${order.id}?reason=${encodeURIComponent(reason.trim())}`,
+        `${API_URL}/api/orders/${deleteOrder.id}?reason=${encodeURIComponent(deleteReason.trim())}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       setMessage({ type: 'success', text: res.data?.message || 'Done' });
+      setDeleteDialogOpen(false);
+      setDeleteOrder(null);
+      setDeleteReason('');
       fetchOrders();
     } catch (error) {
       console.error('Error deleting order:', error);
       setMessage({ type: 'error', text: error.response?.data?.detail || 'Failed to delete order' });
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -2285,6 +2298,49 @@ const ManageOrders = () => {
             }
           }}
         />
+
+        {/* Delete Order Reason Dialog */}
+        <Dialog open={deleteDialogOpen} onOpenChange={(open) => { if (!deleting) { setDeleteDialogOpen(open); if (!open) { setDeleteOrder(null); setDeleteReason(''); } } }}>
+          <DialogContent className="sm:max-w-md" data-testid="delete-order-dialog">
+            <DialogHeader>
+              <DialogTitle>Delete Order {deleteOrder ? `#${deleteOrder.order_number}` : ''}</DialogTitle>
+              <DialogDescription>
+                Super Admin: deletes immediately. Others: a delete request is sent for super admin approval.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2 py-2">
+              <Label htmlFor="delete-reason">Reason for deletion <span className="text-red-500">*</span></Label>
+              <textarea
+                id="delete-reason"
+                data-testid="delete-reason-input"
+                value={deleteReason}
+                onChange={(e) => setDeleteReason(e.target.value)}
+                placeholder="e.g., Customer cancelled, duplicate entry, wrong details..."
+                rows={4}
+                autoFocus
+                className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />
+            </div>
+            <div className="flex justify-end space-x-2">
+              <Button
+                variant="outline"
+                onClick={() => { setDeleteDialogOpen(false); setDeleteOrder(null); setDeleteReason(''); }}
+                disabled={deleting}
+                data-testid="delete-cancel-button"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={confirmDeleteOrder}
+                disabled={deleting || !deleteReason.trim()}
+                data-testid="delete-confirm-button"
+              >
+                {deleting ? 'Deleting...' : 'Delete Order'}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </LayoutWithSidebar>
   );
