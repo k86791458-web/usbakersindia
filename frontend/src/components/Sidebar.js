@@ -6,11 +6,13 @@ import { LayoutDashboard, ShoppingCart, Clock, Store, Users, MapPin, Settings, L
 import { useState } from 'react';
 import { useLogoutConfirm } from './ConfirmDialog';
 
-const Sidebar = () => {
+const Sidebar = ({ collapsed: collapsedProp, setCollapsed: setCollapsedProp }) => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [collapsed, setCollapsed] = useState(false);
+  const [internalCollapsed, setInternalCollapsed] = useState(false);
+  const collapsed = collapsedProp !== undefined ? collapsedProp : internalCollapsed;
+  const setCollapsed = setCollapsedProp || setInternalCollapsed;
   
   const { showConfirm, LogoutConfirmDialog } = useLogoutConfirm(logout);
 
