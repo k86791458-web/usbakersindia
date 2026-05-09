@@ -4652,9 +4652,9 @@ async def get_customers(
 
 @api_router.get("/dashboard/branch-summary")
 async def get_branch_summary(
-    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER, UserRole.FACTORY_MANAGER]))
 ):
-    """Get branch-wise summary for super admin dashboard"""
+    """Get branch-wise summary for dashboard"""
     outlets = await db.outlets.find({"is_active": True}, {"_id": 0}).to_list(100)
     today = datetime.now(timezone.utc).date().isoformat()
     
