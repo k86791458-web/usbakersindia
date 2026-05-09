@@ -1,3 +1,8 @@
+// Polyfills for legacy browsers (Smart TVs: Tizen, WebOS, older Android TV WebViews).
+// IMPORTANT: these must be the very first imports so the polyfills run before
+// any other module touches the browser globals.
+import "react-app-polyfill/stable";
+
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "@/index.css";
