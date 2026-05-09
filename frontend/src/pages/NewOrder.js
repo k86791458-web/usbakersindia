@@ -48,6 +48,7 @@ const NewOrder = () => {
   const submittingRef = useRef(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [submitAttempted, setSubmitAttempted] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [pendingImageFile, setPendingImageFile] = useState(null);
@@ -314,6 +315,7 @@ const NewOrder = () => {
 
   const handleSubmit = async (e, isPunchOrder = false) => {
     e.preventDefault();
+    setSubmitAttempted(true);
 
     // Prevent double submission (sync check via ref)
     if (submittingRef.current || loading) return;
@@ -666,7 +668,7 @@ const NewOrder = () => {
                       })
                     }
                   >
-                    <SelectTrigger className={!formData.customer_info.gender ? 'border-red-300' : ''}>
+                    <SelectTrigger className={submitAttempted && !formData.customer_info.gender ? 'border-red-300' : ''}>
                       <SelectValue placeholder="Select gender *" />
                     </SelectTrigger>
                     <SelectContent>
@@ -675,7 +677,7 @@ const NewOrder = () => {
                       <SelectItem value="other">Other</SelectItem>
                     </SelectContent>
                   </Select>
-                  {!formData.customer_info.gender && (
+                  {submitAttempted && !formData.customer_info.gender && (
                     <p className="text-xs text-red-500 mt-1">Gender is required</p>
                   )}
                 </div>
