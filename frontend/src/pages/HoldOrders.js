@@ -12,6 +12,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { DollarSign, Trash2, Eye, Edit, Send } from 'lucide-react';
+import DeleteOrderDialog from '../components/DeleteOrderDialog';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -32,6 +33,8 @@ const HoldOrders = () => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [editFormData, setEditFormData] = useState(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [orderToDelete, setOrderToDelete] = useState(null);
 
   const [paymentData, setPaymentData] = useState({
     amount: 0,
@@ -146,16 +149,9 @@ const HoldOrders = () => {
     }
   };
 
-  const handleDelete = async (orderId) => {
-    if (!window.confirm('Are you sure you want to delete this order?')) return;
-
-    try {
-      await axios.delete(`${API}/orders/${orderId}`);
-      setSuccess('Order deleted successfully');
-      fetchOrders();
-    } catch (error) {
-      setError('Failed to delete order');
-    }
+  const openDeleteDialog = (order) => {
+    setOrderToDelete({ id: order.id, order_number: order.order_number });
+    setDeleteDialogOpen(true);
   };
 
   const openViewDialog = (order) => {
@@ -320,9 +316,10 @@ const HoldOrders = () => {
                           </Button>
                           <Button
                             size="sm"
-                            onClick={() => handleDelete(order.id)}
+                            onClick={() => openDeleteDialog(order)}
                             variant="destructive"
                             title="Delete Order"
+                            data-testid={`delete-order-btn-${order.id}`}
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -747,6 +744,17 @@ const HoldOrders = () => {
             )}
           </DialogContent>
         </Dialog>
+
+        <DeleteOrderDialog
+          open={deleteDialogOpen}
+          onOpenChange={setDeleteDialogOpen}
+          order={orderToDelete}
+          onDeleted={(msg) => {
+            setOrderToDelete(null);
+            setSuccess(msg || 'Order deleted successfully');
+            fetchOrders();
+          }}
+        />
       </div>
     </LayoutWithSidebar>
   );
