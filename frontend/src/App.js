@@ -1,0 +1,317 @@
+import { BrowserRouter, Routes, Route, Navigate as RouterNavigate } from 'react-router-dom';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { ProtectedRoute } from './components/ProtectedRoute';
+import Login from './pages/Login';
+import SuperAdminDashboard from './pages/SuperAdminDashboard';
+import UserManagementNew from './pages/UserManagementNew';
+import OutletManagement from './pages/OutletManagement';
+import ZoneManagement from './pages/ZoneManagement';
+import Settings from './pages/Settings';
+import NewOrder from './pages/NewOrder';
+import HoldOrders from './pages/HoldOrders';
+import PendingOrders from './pages/PendingOrders';
+import Customers from './pages/Customers';
+import MSG91Settings from './pages/MSG91Settings';
+import AiSensySettings from './pages/AiSensySettings';
+import ManageOrders from './pages/ManageOrders';
+import CreditOrders from './pages/CreditOrders';
+import Payments from './pages/Payments';
+import KitchenDashboard from './pages/KitchenDashboard';
+import KitchenDashboardNew from './pages/KitchenDashboardNew';
+import DeliveryDashboard from './pages/DeliveryDashboard';
+import Reports from './pages/Reports';
+import PermissionManagement from './pages/PermissionManagement';
+import PetPoojaSettings from './pages/PetPoojaSettings';
+import SalesPersonManagement from './pages/SalesPersonManagement';
+import PetPoojaSync from './pages/PetPoojaSync';
+import NavigatePage from './pages/Navigate';
+import IncentiveReport from './pages/IncentiveReport';
+import CakeImageReport from './pages/CakeImageReport';
+import FactoryDashboard from './pages/FactoryDashboard';
+import DeletedOrders from './pages/DeletedOrders';
+import ChangesLog from './pages/ChangesLog';
+import WhatsAppTemplates from './pages/WhatsAppTemplates';
+import PetPoojaOrders from './pages/PetPoojaOrders';
+import ActivityLogs from './pages/ActivityLogs';
+import '@/App.css';
+
+const AppRoutes = () => {
+  const { isAuthenticated, loading, user } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-lg">Loading...</div>
+      </div>
+    );
+  }
+
+  // Get default route based on user role
+  const getDefaultRoute = () => {
+    if (!user) return '/login';
+    if (user.role === 'kitchen') return '/kitchen';
+    if (user.role === 'delivery') return '/delivery';
+    if (user.role === 'factory_manager') return '/factory';
+    return '/dashboard';
+  };
+
+  return (
+    <Routes>
+      <Route
+        path="/login"
+        element={isAuthenticated ? <RouterNavigate to={getDefaultRoute()} replace /> : <Login />}
+      />
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'order_manager']}>
+            <SuperAdminDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/new-order"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'order_manager', 'factory_manager']}>
+            <NewOrder />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/hold-orders"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'order_manager']}>
+            <HoldOrders />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/pending-orders"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'order_manager']}>
+            <PendingOrders />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/manage-orders"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'order_manager']}>
+            <ManageOrders />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/credit-orders"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'order_manager']}>
+            <CreditOrders />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/payments"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'order_manager']}>
+            <Payments />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/sales-persons"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <SalesPersonManagement />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/customers"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'order_manager']}>
+            <Customers />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/users"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <UserManagementNew />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/outlets"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <OutletManagement />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/zones"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <ZoneManagement />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/msg91-settings"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <MSG91Settings />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/aisensy-settings"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <AiSensySettings />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/kitchen"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'kitchen', 'factory_manager']}>
+            <KitchenDashboardNew />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/factory"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'factory_manager']}>
+            <FactoryDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/kitchen-old"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'kitchen']}>
+            <KitchenDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/delivery"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'delivery']}>
+            <DeliveryDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/reports"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'kitchen', 'order_manager']}>
+            <Reports />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/incentive-report"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <IncentiveReport />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/settings"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <Settings />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/permissions"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <PermissionManagement />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/petpooja-settings"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <PetPoojaSettings />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/petpooja-sync"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <PetPoojaSync />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/navigate"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <NavigatePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/cake-image-report"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin']}>
+            <CakeImageReport />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/deleted-orders"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'order_manager']}>
+            <DeletedOrders />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/changes-log"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <ChangesLog />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/activity-logs"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <ActivityLogs />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/"
+        element={<RouterNavigate to={isAuthenticated ? getDefaultRoute() : '/login'} replace />}
+      />
+    </Routes>
+  );
+};
+
+function App() {
+  return (
+    <AuthProvider>
+      <BrowserRouter>
+        <AppRoutes />
+      </BrowserRouter>
+    </AuthProvider>
+  );
+}
+
+export default App;

@@ -1,0 +1,1195 @@
+import { useState, useEffect, useRef } from 'react';
+import axios from 'axios';
+import LayoutWithSidebar from '../components/LayoutWithSidebar';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Switch } from '@/components/ui/switch';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Upload, Plus, X, Mic, Square, Play, Trash2, RefreshCw, AlertTriangle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import ImageEditor from '../components/ImageEditor';
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const API = `${BACKEND_URL}/api`;
+
+// Retry helper for flaky networks (e.g., VPS cold-starts, transient drops)
+const fetchWithRetry = async (url, { retries = 2, delay = 600, timeout = 12000 } = {}) => {
+  let lastErr;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const res = await axios.get(url, { timeout });
+      return res;
+    } catch (err) {
+      lastErr = err;
+      if (i < retries) {
+        await new Promise(r => setTimeout(r, delay * Math.pow(2, i)));
+      }
+    }
+  }
+  throw lastErr;
+};
+
+const NewOrder = () => {
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const [outlets, setOutlets] = useState([]);
+  const [zones, setZones] = useState([]);
+  const [salesPersons, setSalesPersons] = useState([]);
+  const [flavours, setFlavours] = useState([]);
+  const [occasions, setOccasions] = useState([]);
+  const [timeSlots, setTimeSlots] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [submitAttempted, setSubmitAttempted] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [pendingImageFile, setPendingImageFile] = useState(null);
+  const [selectedZone, setSelectedZone] = useState(null);
+  
+  // Voice recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [mediaRecorder, setMediaRecorder] = useState(null);
+  const [audioBlob, setAudioBlob] = useState(null);
+  const [audioURL, setAudioURL] = useState(null);
+
+  const [formData, setFormData] = useState({
+    order_type: 'self',
+    receiver_info: null,
+    customer_info: {
+      name: '',
+      phone: '',
+      alternate_phone: '',
+      birthday: '',
+      gender: null
+    },
+    needs_delivery: false,
+    delivery_address: '',
+    delivery_city: '',
+    zone_id: '',
+    custom_delivery_charge: 0,
+    occasion: '',
+    flavour: '',
+    size_pounds: '',
+    base_size: '',
+    cake_image_url: '',
+    secondary_images: [],
+    name_on_cake: '',
+    special_instructions: '',
+    voice_instruction_url: '',
+    delivery_date: '',
+    delivery_time: '',
+    outlet_id: user?.outlet_id || '', // Auto-fetch from logged-in user
+    order_taken_by: '',
+    total_amount: 0,
+    is_credit_order: false
+  });
+
+  // Preset loading status (for showing reload banner if something failed)
+  const [presetsLoading, setPresetsLoading] = useState(true);
+  const [presetsError, setPresetsError] = useState('');
+
+  useEffect(() => {
+    // Auto-set outlet_id when user loads
+    if (user?.outlet_id && !formData.outlet_id) {
+      setFormData(prev => ({ ...prev, outlet_id: user.outlet_id }));
+    }
+  }, [user]);
+
+  // Load public presets ONCE on mount (don't depend on user since these endpoints are public).
+  // This avoids the double-fire (user=null → user=object) that was silently wasting requests
+  // and leaving dropdowns empty on slow/cold-start VPS responses.
+  useEffect(() => {
+    loadAllPresets();
+  }, []);
+
+  // Fetch role-specific data once auth user is ready
+  useEffect(() => {
+    fetchOutlets();
+    if (user?.outlet_id) {
+      fetchSalesPersons(user.outlet_id);
+    } else if (user) {
+      fetchSalesPersons(null);
+    }
+  }, [user]);
+
+  const loadAllPresets = async () => {
+    setPresetsLoading(true);
+    setPresetsError('');
+    const results = await Promise.allSettled([
+      fetchFlavours(),
+      fetchOccasions(),
+      fetchTimeSlots(),
+    ]);
+    const failed = results.filter(r => r.status === 'rejected');
+    if (failed.length > 0) {
+      setPresetsError(`Some presets failed to load (${failed.length}/3). Tap Reload to try again.`);
+    }
+    setPresetsLoading(false);
+  };
+
+  useEffect(() => {
+    if (formData.outlet_id) {
+      fetchZones(formData.outlet_id);
+      fetchSalesPersons(formData.outlet_id);
+    }
+  }, [formData.outlet_id]);
+
+  // Auto-calculate total when zone or cake amount changes
+  useEffect(() => {
+    if (formData.needs_delivery && selectedZone) {
+      const cakeAmount = parseFloat(formData.total_amount) || 0;
+      const deliveryCharge = parseFloat(selectedZone.delivery_charge) || 0;
+      // Don't add delivery to total_amount here - backend will do it
+    }
+  }, [formData.zone_id, formData.total_amount, formData.needs_delivery, selectedZone]);
+
+  const fetchOutlets = async () => {
+    try {
+      const response = await axios.get(`${API}/outlets`);
+      setOutlets(response.data);
+    } catch (error) {
+      console.error('Failed to fetch outlets:', error);
+    }
+  };
+
+  const fetchZones = async (outletId) => {
+    try {
+      const response = await axios.get(`${API}/zones?outlet_id=${outletId}`);
+      setZones(response.data);
+    } catch (error) {
+      console.error('Failed to fetch zones:', error);
+    }
+  };
+
+  const fetchSalesPersons = async (outletId) => {
+    try {
+      const url = outletId 
+        ? `${API}/sales-persons?outlet_id=${outletId}`
+        : `${API}/sales-persons`;
+      const response = await axios.get(url);
+      setSalesPersons(response.data);
+    } catch (error) {
+      console.error('Failed to fetch sales persons:', error);
+    }
+  };
+
+  const fetchFlavours = async () => {
+    try {
+      const response = await fetchWithRetry(`${API}/flavours`);
+      setFlavours(Array.isArray(response.data) ? response.data : []);
+    } catch (error) {
+      console.error('Failed to fetch flavours (after retries):', error);
+      throw error;
+    }
+  };
+
+  const fetchOccasions = async () => {
+    try {
+      const response = await fetchWithRetry(`${API}/occasions`);
+      setOccasions(Array.isArray(response.data) ? response.data : []);
+    } catch (error) {
+      console.error('Failed to fetch occasions (after retries):', error);
+      throw error;
+    }
+  };
+
+  const fetchTimeSlots = async () => {
+    try {
+      const response = await fetchWithRetry(`${API}/time-slots`);
+      setTimeSlots(Array.isArray(response.data) ? response.data : []);
+    } catch (error) {
+      console.error('Failed to fetch time slots (after retries):', error);
+      throw error;
+    }
+  };
+
+
+  const handleImageUpload = async (e, type = 'primary') => {
+    const file = e.target.files[0];
+    if (!file) return;
+    // Open the editor first so user can crop / annotate before upload
+    setPendingImageFile({ file, type });
+    setEditorOpen(true);
+    e.target.value = '';
+  };
+
+  const uploadEditedImage = async (blob, type) => {
+    setUploadingImage(true);
+    const formDataUpload = new FormData();
+    formDataUpload.append('file', new File([blob], `edited_${Date.now()}.png`, { type: 'image/png' }));
+
+    try {
+      const response = await axios.post(`${API}/upload-image`, formDataUpload, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      const url = response.data.url || response.data.file_url;
+
+      if (type === 'primary') {
+        setFormData({ ...formData, cake_image_url: url });
+      } else {
+        setFormData({
+          ...formData,
+          secondary_images: [...formData.secondary_images, url]
+        });
+      }
+    } catch (error) {
+      setError(error.response?.data?.detail || 'Image upload failed');
+    } finally {
+      setUploadingImage(false);
+    }
+  };
+
+  const removeSecondaryImage = (index) => {
+    const newImages = formData.secondary_images.filter((_, i) => i !== index);
+    setFormData({ ...formData, secondary_images: newImages });
+  };
+
+  // Voice Recording Functions
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks = [];
+
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        setAudioBlob(blob);
+        setAudioURL(URL.createObjectURL(blob));
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      recorder.start();
+      setMediaRecorder(recorder);
+      setIsRecording(true);
+    } catch (error) {
+      setError('Microphone access denied. Please allow microphone access.');
+      console.error('Recording error:', error);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorder && isRecording) {
+      mediaRecorder.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const deleteRecording = () => {
+    setAudioBlob(null);
+    setAudioURL(null);
+    setFormData({ ...formData, voice_instruction_url: '' });
+  };
+
+  const uploadVoiceRecording = async () => {
+    if (!audioBlob) return;
+
+    const voiceFormData = new FormData();
+    voiceFormData.append('file', audioBlob, 'voice-instruction.webm');
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await axios.post(`${API}/upload-voice`, voiceFormData, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+      
+      setFormData({ ...formData, voice_instruction_url: response.data.file_url });
+      setSuccess('Voice instruction uploaded successfully!');
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (error) {
+      setError('Failed to upload voice instruction');
+      console.error('Upload error:', error);
+    }
+  };
+
+  const handleSubmit = async (e, isPunchOrder = false) => {
+    e.preventDefault();
+    setSubmitAttempted(true);
+
+    // Prevent double submission (sync check via ref)
+    if (submittingRef.current || loading) return;
+    submittingRef.current = true;
+    setError('');
+    setSuccess('');
+    setLoading(true);
+
+    // ALWAYS reset state on any exit path so the button never gets stuck
+    const finishWithError = (msg) => {
+      setError(msg);
+      setLoading(false);
+      submittingRef.current = false;
+    };
+
+    try {
+      // Validate for punch orders
+      if (isPunchOrder) {
+        const errors = [];
+        if (!formData.customer_info.name) errors.push('Customer name');
+        if (!formData.customer_info.phone) errors.push('Customer phone');
+        if (formData.customer_info.phone && formData.customer_info.phone.length !== 10) errors.push('Phone must be 10 digits');
+        if (!formData.customer_info.gender) errors.push('Gender');
+        if (!formData.order_taken_by) errors.push('Order taken by');
+        if (!formData.occasion) errors.push('Occasion');
+        if (!formData.flavour) errors.push('Flavour');
+        if (!formData.delivery_date) errors.push('Delivery date');
+        if (!formData.delivery_time) errors.push('Delivery time');
+        if (!formData.total_amount || formData.total_amount <= 0) errors.push('Cake amount');
+        if (formData.needs_delivery && !formData.delivery_address) errors.push('Delivery address');
+        if (formData.needs_delivery && !formData.zone_id) errors.push('Delivery zone');
+
+        if (errors.length > 0) {
+          return finishWithError(`Missing required fields: ${errors.join(', ')}`);
+        }
+      }
+
+      // Validate phone number length
+      if (formData.customer_info.phone && formData.customer_info.phone.length !== 10) {
+        return finishWithError('Phone number must be exactly 10 digits');
+      }
+
+      // Validate gender
+      if (!formData.customer_info.gender) {
+        return finishWithError('Gender is required');
+      }
+
+      // Validate delivery date/time is not in the past
+      if (formData.delivery_date && formData.delivery_time) {
+        const now = new Date();
+        const [hours, minutes] = formData.delivery_time.split(':').map(Number);
+        const deliveryDateTime = new Date(formData.delivery_date + 'T00:00:00');
+        deliveryDateTime.setHours(hours, minutes, 0, 0);
+        if (deliveryDateTime <= now) {
+          return finishWithError('Delivery date and time cannot be in the past. Please select a future date/time.');
+        }
+      } else if (formData.delivery_date) {
+        const today = new Date().toISOString().split('T')[0];
+        if (formData.delivery_date < today) {
+          return finishWithError('Delivery date cannot be in the past.');
+        }
+      }
+
+      // Validate
+      if (!formData.cake_image_url) {
+        return finishWithError('Cake image is mandatory');
+      }
+
+      if (formData.needs_delivery && !formData.delivery_address) {
+        return finishWithError('Delivery address is required for delivery orders');
+      }
+
+      // Build clean payload: strip empty optional numeric fields so backend Optional[float] doesn't error.
+      const cleanPayload = { ...formData };
+      ['size_pounds', 'base_size', 'custom_delivery_charge'].forEach((k) => {
+        const v = cleanPayload[k];
+        if (v === '' || v === null || v === undefined || Number.isNaN(v)) {
+          if (k === 'custom_delivery_charge') {
+            cleanPayload[k] = 0;
+          } else {
+            delete cleanPayload[k];
+          }
+        }
+      });
+
+      const response = await axios.post(`${API}/orders?is_punch_order=${isPunchOrder}`, cleanPayload);
+      const createdOrder = response.data;
+
+      // CRITICAL: Reset loading + lock BEFORE navigate so button never gets stuck.
+      // In production builds navigate() can unmount this component before a finally
+      // block commits its setState, leaving `loading=true` on the next mount and
+      // making the submit button permanently disabled (no click event ever fires).
+      setLoading(false);
+      submittingRef.current = false;
+
+      if (isPunchOrder) {
+        setSuccess(`Punch Order Created! Order #: ${createdOrder.order_number}`);
+        alert(`Punch Order Created!\n\nOrder #: ${createdOrder.order_number}\n\nStatus: Pending (waiting for payment threshold)\n\nIMPORTANT: Add Order # in PetPooja comment field.`);
+        navigate('/pending-orders');
+      } else {
+        setSuccess(`Hold Order Created! Order #: ${createdOrder.order_number}`);
+        navigate('/hold-orders');
+      }
+      return;
+    } catch (error) {
+      setError(error.response?.data?.detail || 'Failed to create order');
+    } finally {
+      setLoading(false);
+      submittingRef.current = false;
+    }
+  };
+
+  return (
+    <LayoutWithSidebar>
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-3xl font-bold" style={{ color: '#e92587' }}>New Order</h2>
+          <p className="text-gray-600 mt-1">Create a new cake order</p>
+        </div>
+
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        {success && (
+          <Alert>
+            <AlertDescription>{success}</AlertDescription>
+          </Alert>
+        )}
+
+        {/* Preset load status banner - appears if flavours / occasions / time slots failed to load */}
+        {(presetsError ||
+          (!presetsLoading && (flavours.length === 0 || occasions.length === 0 || timeSlots.length === 0))) && (
+          <Alert className="border-amber-300 bg-amber-50" data-testid="presets-reload-banner">
+            <AlertTriangle className="h-4 w-4 text-amber-600" />
+            <AlertDescription className="flex items-center justify-between gap-4">
+              <span className="text-amber-800">
+                {presetsError ||
+                  `Some presets didn't load${flavours.length === 0 ? ' · flavours' : ''}${occasions.length === 0 ? ' · occasions' : ''}${timeSlots.length === 0 ? ' · time slots' : ''}. If this is a new system, add them from Settings. Otherwise tap Reload.`}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={loadAllPresets}
+                disabled={presetsLoading}
+                className="border-amber-400 text-amber-700 hover:bg-amber-100 flex-shrink-0"
+                data-testid="reload-presets-btn"
+              >
+                <RefreshCw className={`h-4 w-4 mr-1 ${presetsLoading ? 'animate-spin' : ''}`} />
+                {presetsLoading ? 'Loading...' : 'Reload'}
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Order Type */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Order Type</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <RadioGroup
+                value={formData.order_type}
+                onValueChange={(value) => setFormData({ ...formData, order_type: value })}
+              >
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="self" id="self" />
+                  <Label htmlFor="self">For Self</Label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <RadioGroupItem value="someone_else" id="someone_else" />
+                  <Label htmlFor="someone_else">For Someone Else</Label>
+                </div>
+              </RadioGroup>
+
+              {formData.order_type === 'someone_else' && (
+                <div className="mt-4 space-y-4 p-4 bg-gray-50 rounded-lg">
+                  <h4 className="font-semibold">Receiver Information</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label>Receiver Name *</Label>
+                      <Input
+                        required
+                        value={formData.receiver_info?.name || ''}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            receiver_info: { ...formData.receiver_info, name: e.target.value }
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <Label>Receiver Phone *</Label>
+                      <Input
+                        required
+                        value={formData.receiver_info?.phone || ''}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            receiver_info: { ...formData.receiver_info, phone: e.target.value }
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <Label>Alternate Phone</Label>
+                      <Input
+                        value={formData.receiver_info?.alternate_phone || ''}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            receiver_info: {
+                              ...formData.receiver_info,
+                              alternate_phone: e.target.value
+                            }
+                          })
+                        }
+                      />
+                    </div>
+                    <div>
+                      <Label>Receiver Address *</Label>
+                      <Input
+                        required
+                        value={formData.receiver_info?.address || ''}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            receiver_info: { ...formData.receiver_info, address: e.target.value }
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Customer Info */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Customer Information</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Name *</Label>
+                  <Input
+                    required
+                    value={formData.customer_info.name}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        customer_info: { ...formData.customer_info, name: e.target.value }
+                      })
+                    }
+                    data-testid="customer-name-input"
+                  />
+                </div>
+                <div>
+                  <Label>Phone *</Label>
+                  <Input
+                    required
+                    type="tel"
+                    maxLength={10}
+                    value={formData.customer_info.phone}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/\D/g, '').slice(0, 10);
+                      setFormData({
+                        ...formData,
+                        customer_info: { ...formData.customer_info, phone: val }
+                      });
+                    }}
+                    placeholder="10 digit phone number"
+                    data-testid="customer-phone-input"
+                  />
+                  {formData.customer_info.phone && formData.customer_info.phone.length !== 10 && (
+                    <p className="text-xs text-red-500 mt-1">Phone number must be exactly 10 digits</p>
+                  )}
+                </div>
+                <div>
+                  <Label>Alternate Phone</Label>
+                  <Input
+                    value={formData.customer_info.alternate_phone}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        customer_info: { ...formData.customer_info, alternate_phone: e.target.value }
+                      })
+                    }
+                  />
+                </div>
+                <div>
+                  <Label>Birthday (optional)</Label>
+                  <div className="flex gap-2 items-center">
+                    <Select
+                      value={(formData.customer_info.birthday || '').split('-')[2] || ''}
+                      onValueChange={(day) => {
+                        const parts = (formData.customer_info.birthday || '----').split('-');
+                        const year = parts[0] || '';
+                        const month = parts[1] || '';
+                        const newVal = year || month || day ? `${year}-${month}-${day}` : '';
+                        setFormData({
+                          ...formData,
+                          customer_info: { ...formData.customer_info, birthday: newVal }
+                        });
+                      }}
+                    >
+                      <SelectTrigger data-testid="bday-day-trigger"><SelectValue placeholder="Day" /></SelectTrigger>
+                      <SelectContent>
+                        {Array.from({length: 31}, (_, i) => String(i + 1).padStart(2, '0')).map((d) => (
+                          <SelectItem key={d} value={d}>{d}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={(formData.customer_info.birthday || '').split('-')[1] || ''}
+                      onValueChange={(month) => {
+                        const parts = (formData.customer_info.birthday || '----').split('-');
+                        const year = parts[0] || '';
+                        const day = parts[2] || '';
+                        const newVal = year || month || day ? `${year}-${month}-${day}` : '';
+                        setFormData({
+                          ...formData,
+                          customer_info: { ...formData.customer_info, birthday: newVal }
+                        });
+                      }}
+                    >
+                      <SelectTrigger data-testid="bday-month-trigger"><SelectValue placeholder="Month" /></SelectTrigger>
+                      <SelectContent>
+                        {[
+                          ['01','Jan'],['02','Feb'],['03','Mar'],['04','Apr'],
+                          ['05','May'],['06','Jun'],['07','Jul'],['08','Aug'],
+                          ['09','Sep'],['10','Oct'],['11','Nov'],['12','Dec'],
+                        ].map(([v,name]) => (
+                          <SelectItem key={v} value={v}>{name}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      data-testid="bday-year-input"
+                      type="number"
+                      placeholder="YYYY"
+                      min="1900"
+                      max={new Date().getFullYear()}
+                      value={(formData.customer_info.birthday || '').split('-')[0] || ''}
+                      onChange={(e) => {
+                        const year = e.target.value;
+                        const parts = (formData.customer_info.birthday || '----').split('-');
+                        const month = parts[1] || '';
+                        const day = parts[2] || '';
+                        const newVal = year || month || day ? `${year}-${month}-${day}` : '';
+                        setFormData({
+                          ...formData,
+                          customer_info: { ...formData.customer_info, birthday: newVal }
+                        });
+                      }}
+                    />
+                    {formData.customer_info.birthday && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setFormData({ ...formData, customer_info: { ...formData.customer_info, birthday: '' } })}
+                        data-testid="bday-clear-button"
+                        title="Clear birthday"
+                      >
+                        Clear
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">Entirely optional. You can fill any combination (e.g., only month/day) or leave blank.</p>
+                </div>
+                <div>
+                  <Label>Gender *</Label>
+                  <Select
+                    value={formData.customer_info.gender || ''}
+                    onValueChange={(value) =>
+                      setFormData({
+                        ...formData,
+                        customer_info: { ...formData.customer_info, gender: value }
+                      })
+                    }
+                  >
+                    <SelectTrigger className={submitAttempted && !formData.customer_info.gender ? 'border-red-300' : ''}>
+                      <SelectValue placeholder="Select gender *" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="male">Male</SelectItem>
+                      <SelectItem value="female">Female</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {submitAttempted && !formData.customer_info.gender && (
+                    <p className="text-xs text-red-500 mt-1">Gender is required</p>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Delivery Information */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Delivery Information</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center space-x-2">
+                <Switch
+                  checked={formData.needs_delivery}
+                  onCheckedChange={(checked) => setFormData({ ...formData, needs_delivery: checked })}
+                  data-testid="delivery-toggle"
+                />
+                <Label>Delivery Required</Label>
+              </div>
+
+              {formData.needs_delivery && (
+                <div className="space-y-4">
+                  <div>
+                    <Label>Delivery Address *</Label>
+                    <Textarea
+                      required
+                      value={formData.delivery_address}
+                      onChange={(e) => setFormData({ ...formData, delivery_address: e.target.value })}
+                      data-testid="delivery-address-input"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label>City *</Label>
+                      <Input
+                        required
+                        value={formData.delivery_city}
+                        onChange={(e) => setFormData({ ...formData, delivery_city: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <Label>Zone</Label>
+                      <Select
+                        value={formData.zone_id}
+                        onValueChange={(value) => setFormData({ ...formData, zone_id: value })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select zone" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {zones.map((zone) => (
+                            <SelectItem key={zone.id} value={zone.id}>
+                              {zone.name} - ₹{zone.delivery_charge}
+                            </SelectItem>
+                          ))}
+                          <SelectItem value="custom">Custom Delivery Charge</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  {formData.zone_id === 'custom' && (
+                    <div>
+                      <Label>Custom Delivery Charge (₹)</Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        placeholder="Enter custom delivery charge"
+                        onChange={(e) => setFormData({ ...formData, custom_delivery_charge: parseFloat(e.target.value) || 0 })}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">For areas not covered by zones</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Cake Details */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Cake Details</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Outlet *</Label>
+                  <Select
+                    required
+                    value={formData.outlet_id}
+                    onValueChange={(value) => setFormData({ ...formData, outlet_id: value })}
+                  >
+                    <SelectTrigger data-testid="outlet-select">
+                      <SelectValue placeholder="Select outlet" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {outlets.map((outlet) => (
+                        <SelectItem key={outlet.id} value={outlet.id}>
+                          {outlet.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Order Taken By *</Label>
+                  <Select
+                    required
+                    value={formData.order_taken_by}
+                    onValueChange={(value) => setFormData({ ...formData, order_taken_by: value })}
+                  >
+                    <SelectTrigger data-testid="order-taken-by-select">
+                      <SelectValue placeholder="Select sales person" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {salesPersons.length === 0 ? (
+                        <SelectItem value="none" disabled>No sales persons available</SelectItem>
+                      ) : (
+                        salesPersons.map(person => (
+                          <SelectItem key={person.id} value={person.id}>
+                            {person.name}
+                          </SelectItem>
+                        ))
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Occasion</Label>
+                  <Select
+                    value={formData.occasion}
+                    onValueChange={(value) => setFormData({ ...formData, occasion: value })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select occasion" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {occasions.map((occasion) => (
+                        <SelectItem key={occasion.id} value={occasion.name}>
+                          {occasion.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Flavour *</Label>
+                  <Select
+                    required
+                    value={formData.flavour}
+                    onValueChange={(value) => setFormData({ ...formData, flavour: value })}
+                  >
+                    <SelectTrigger data-testid="flavour-select">
+                      <SelectValue placeholder="Select flavour" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {flavours.map((flavour) => (
+                        <SelectItem key={flavour.id} value={flavour.name}>
+                          {flavour.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Size (Pounds)</Label>
+                  <Input
+                    required
+                    type="number"
+                    step="0.5"
+                    min="0.5"
+                    placeholder="Enter cake size in pounds"
+                    value={formData.size_pounds || ''}
+                    onChange={(e) => setFormData({ ...formData, size_pounds: e.target.value ? parseFloat(e.target.value) : '' })}
+                    data-testid="size-input"
+                  />
+                </div>
+                {/* Base Size is admin-only; added later from Manage Orders by Super Admin. */}
+                <div>
+                  <Label>Name on Cake</Label>
+                  <Input
+                    value={formData.name_on_cake}
+                    onChange={(e) => setFormData({ ...formData, name_on_cake: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <Label>Total Amount (₹) *</Label>
+                  <Input
+                    required
+                    type="number"
+                    min="0"
+                    value={formData.total_amount}
+                    onChange={(e) => setFormData({ ...formData, total_amount: parseFloat(e.target.value) })}
+                    data-testid="amount-input"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <Label>Special Instructions (one per line)</Label>
+                <Textarea
+                  value={formData.special_instructions}
+                  onChange={(e) => setFormData({ ...formData, special_instructions: e.target.value })}
+                  placeholder={"Enter each instruction on a new line, e.g.:\nExtra cream on top\nNo fondant\nWrite name in red color"}
+                  rows={4}
+                />
+              </div>
+
+              {/* Voice Instructions */}
+              <Card className="bg-blue-50 border-blue-200">
+                <CardContent className="pt-6">
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-base font-semibold">🎤 Voice Instructions</Label>
+                      {audioURL && !isRecording && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={deleteRecording}
+                          className="text-red-600 hover:text-red-700"
+                        >
+                          <Trash2 className="h-4 w-4 mr-1" />
+                          Delete
+                        </Button>
+                      )}
+                    </div>
+                    
+                    {!audioURL && !isRecording && (
+                      <Button
+                        type="button"
+                        onClick={startRecording}
+                        className="w-full text-white"
+                        style={{ backgroundColor: '#e92587' }}
+                      >
+                        <Mic className="mr-2 h-4 w-4" />
+                        Start Recording
+                      </Button>
+                    )}
+
+                    {isRecording && (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-center space-x-2 text-red-600 animate-pulse">
+                          <div className="w-3 h-3 bg-red-600 rounded-full"></div>
+                          <span className="font-semibold">Recording...</span>
+                        </div>
+                        <Button
+                          type="button"
+                          onClick={stopRecording}
+                          className="w-full"
+                          variant="destructive"
+                        >
+                          <Square className="mr-2 h-4 w-4" />
+                          Stop Recording
+                        </Button>
+                      </div>
+                    )}
+
+                    {audioURL && !isRecording && (
+                      <div className="space-y-3">
+                        <audio controls src={audioURL} className="w-full" />
+                        <Button
+                          type="button"
+                          onClick={uploadVoiceRecording}
+                          className="w-full text-white"
+                          style={{ backgroundColor: '#10b981' }}
+                        >
+                          <Upload className="mr-2 h-4 w-4" />
+                          Upload Voice Instruction
+                        </Button>
+                      </div>
+                    )}
+                    
+                    {formData.voice_instruction_url && (
+                      <Alert className="bg-green-50 border-green-200">
+                        <AlertDescription className="text-green-800">
+                          ✓ Voice instruction attached to order
+                        </AlertDescription>
+                      </Alert>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <Label>Delivery Date *</Label>
+                  <Input
+                    required
+                    type="date"
+                    min={new Date().toISOString().split('T')[0]}
+                    value={formData.delivery_date}
+                    onChange={(e) => {
+                      const selectedDate = e.target.value;
+                      const today = new Date().toISOString().split('T')[0];
+                      if (selectedDate < today) {
+                        setError('Delivery date cannot be in the past');
+                        return;
+                      }
+                      setError('');
+                      setFormData({ ...formData, delivery_date: selectedDate });
+                    }}
+                    data-testid="delivery-date-input"
+                  />
+                </div>
+                <div>
+                  <Label>Delivery Time *</Label>
+                  <Input
+                    type="time"
+                    required
+                    value={formData.delivery_time}
+                    onChange={(e) => {
+                      const selectedTime = e.target.value;
+                      setError('');
+                      setFormData({ ...formData, delivery_time: selectedTime });
+                    }}
+                    data-testid="delivery-time-input"
+                    className="w-full"
+                  />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Image Upload */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Cake Images *</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <Label>Primary Cake Image (Mandatory)</Label>
+                <div className="mt-2">
+                  {formData.cake_image_url ? (
+                    <div className="relative inline-block">
+                      <img
+                        src={formData.cake_image_url.startsWith('http') ? formData.cake_image_url : `${BACKEND_URL}${formData.cake_image_url.startsWith('/uploads/') ? '/api' + formData.cake_image_url : formData.cake_image_url}`}
+                        alt="Cake"
+                        className="w-32 h-32 object-cover rounded"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, cake_image_url: '' })}
+                        className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1.5 hover:bg-red-600 shadow-lg z-10 cursor-pointer transition-all"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="flex flex-col items-center justify-center w-32 h-32 border-2 border-dashed rounded cursor-pointer hover:bg-gray-50">
+                      <Upload className="h-8 w-8 text-gray-400" />
+                      <span className="text-xs text-gray-500 mt-2">Upload</span>
+                      <input
+                        type="file"
+                        accept="image/*,.heic,.heif,image/heic,image/heif"
+                        className="hidden"
+                        onChange={(e) => handleImageUpload(e, 'primary')}
+                        disabled={uploadingImage}
+                      />
+                    </label>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <Label>Additional Images (Optional)</Label>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {formData.secondary_images.map((img, index) => (
+                    <div key={index} className="relative inline-block">
+                      <img
+                        src={img.startsWith('http') ? img : `${BACKEND_URL}${img.startsWith('/uploads/') ? '/api' + img : img}`}
+                        alt={`Secondary ${index + 1}`}
+                        className="w-24 h-24 object-cover rounded"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeSecondaryImage(index)}
+                        className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1.5 hover:bg-red-600 shadow-lg z-10 cursor-pointer transition-all"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                  <label className="flex flex-col items-center justify-center w-24 h-24 border-2 border-dashed rounded cursor-pointer hover:bg-gray-50">
+                    <Plus className="h-6 w-6 text-gray-400" />
+                    <input
+                      type="file"
+                      accept="image/*,.heic,.heif,image/heic,image/heif"
+                      className="hidden"
+                      onChange={(e) => handleImageUpload(e, 'secondary')}
+                      disabled={uploadingImage}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {uploadingImage && <p className="text-sm text-gray-500">Uploading image...</p>}
+            </CardContent>
+          </Card>
+
+          <div className="flex justify-end space-x-4">
+            <Button type="button" variant="outline" onClick={() => navigate('/dashboard')}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={(e) => handleSubmit(e, false)}
+              disabled={loading || uploadingImage}
+              data-testid="hold-order-button"
+            >
+              {loading ? 'Creating...' : 'Hold Order'}
+            </Button>
+            <Button
+              type="button"
+              onClick={(e) => handleSubmit(e, true)}
+              disabled={loading || uploadingImage}
+              className="text-white"
+              style={{ backgroundColor: '#e92587' }}
+              data-testid="punch-order-button"
+            >
+              {loading ? 'Creating...' : 'Punch Order'}
+            </Button>
+          </div>
+          {formData.total_amount > 0 && (
+            <div className="mt-4 p-4 bg-blue-50 rounded-lg" data-testid="order-summary-card">
+              <p className="text-sm font-medium mb-2">Order Summary:</p>
+              <div className="space-y-1 text-sm">
+                <div className="flex justify-between">
+                  <span>Cake Amount:</span>
+                  <span className="font-semibold">₹{parseFloat(formData.total_amount || 0).toFixed(2)}</span>
+                </div>
+                {formData.needs_delivery && (selectedZone || formData.zone_id === 'custom') && (
+                  <div className="flex justify-between">
+                    <span>Delivery Charge{formData.zone_id === 'custom' ? ' (Custom)' : ''}:</span>
+                    <span className="font-semibold">₹{parseFloat(
+                      formData.zone_id === 'custom'
+                        ? (formData.custom_delivery_charge || 0)
+                        : (selectedZone?.delivery_charge || 0)
+                    ).toFixed(2)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between border-t pt-2 mt-2">
+                  <span className="font-bold">Total Amount:</span>
+                  <span className="font-bold text-lg" data-testid="order-summary-total">₹{(
+                    parseFloat(formData.total_amount || 0) +
+                    (formData.needs_delivery
+                      ? parseFloat(
+                          formData.zone_id === 'custom'
+                            ? (formData.custom_delivery_charge || 0)
+                            : (selectedZone?.delivery_charge || 0)
+                        )
+                      : 0)
+                  ).toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </form>
+      </div>
+      <ImageEditor
+        open={editorOpen}
+        file={pendingImageFile?.file || null}
+        onCancel={() => { setEditorOpen(false); setPendingImageFile(null); }}
+        onConfirm={async (blob) => {
+          const t = pendingImageFile?.type || 'primary';
+          setEditorOpen(false);
+          await uploadEditedImage(blob, t);
+          setPendingImageFile(null);
+        }}
+      />
+    </LayoutWithSidebar>
+  );
+};
+
+export default NewOrder;

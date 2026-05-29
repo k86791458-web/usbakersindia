@@ -1,0 +1,74 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.App {
+  min-height: 100vh;
+}
+
+/* ===== Kitchen TV Mode =====
+   Targets Smart TVs and large displays. Enlarges fonts so cooks can read
+   the dashboard from several metres away. Applied via body.kitchen-tv-mode
+   class added in KitchenDashboardNew when ?tv=1 query param is present. */
+body.kitchen-tv-mode {
+  cursor: none; /* hide cursor on TV screens */
+}
+body.kitchen-tv-mode .kitchen-tv {
+  font-size: 20px;
+  line-height: 1.35;
+}
+body.kitchen-tv-mode .kitchen-tv h1 {
+  font-size: 2.4rem;
+}
+body.kitchen-tv-mode .kitchen-tv h2,
+body.kitchen-tv-mode .kitchen-tv h3 {
+  font-size: 1.6rem;
+}
+body.kitchen-tv-mode .kitchen-tv .text-xs {
+  font-size: 0.95rem;
+}
+body.kitchen-tv-mode .kitchen-tv .text-sm {
+  font-size: 1.1rem;
+}
+body.kitchen-tv-mode .kitchen-tv .text-base {
+  font-size: 1.25rem;
+}
+body.kitchen-tv-mode .kitchen-tv .text-lg {
+  font-size: 1.5rem;
+}
+body.kitchen-tv-mode .kitchen-tv .text-2xl {
+  font-size: 2rem;
+}
+body.kitchen-tv-mode .kitchen-tv button {
+  font-size: 1.05rem;
+  padding: 10px 16px;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #e92587;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #d11f73;
+}

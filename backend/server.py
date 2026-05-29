@@ -1,0 +1,6137 @@
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, UploadFile, File, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from dotenv import load_dotenv
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from datetime import datetime, timedelta, timezone
+from pydantic import BaseModel, Field, ConfigDict, EmailStr, field_validator
+from typing import List, Optional, Dict, Any
+from enum import Enum
+import os
+import logging
+import uuid
+import requests
+import random
+from pathlib import Path
+from io import BytesIO
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.pdfgen import canvas
+from PIL import Image as PILImage
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    HEIC_SUPPORTED = True
+except Exception:
+    HEIC_SUPPORTED = False
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+
+# MongoDB connection
+mongo_url = os.environ['MONGO_URL']
+client = AsyncIOMotorClient(mongo_url)
+db = client[os.environ['DB_NAME']]
+
+# Create the main app
+app = FastAPI(title="US Bakers - Bakery Management System")
+api_router = APIRouter(prefix="/api")
+
+# Security
+SECRET_KEY = os.environ.get("SECRET_KEY", "your-secret-key-change-in-production-2024-us-bakers")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
+
+# MSG91 WhatsApp Configuration (AiSensy removed - using MSG91 only)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# ==================== ENUMS ====================
+class UserRole(str, Enum):
+    SUPER_ADMIN = "super_admin"
+    OUTLET_ADMIN = "outlet_admin"
+    ORDER_MANAGER = "order_manager"
+    FACTORY_MANAGER = "factory_manager"  # NEW: Can see all orders, add orders, download PDFs
+    KITCHEN = "kitchen"
+    DELIVERY = "delivery"
+    ACCOUNTS = "accounts"
+
+class OrderStatus(str, Enum):
+    PENDING = "pending"  # Punch order, waiting for 20% payment
+    ON_HOLD = "on_hold"  # Hold order, incomplete info
+    CONFIRMED = "confirmed"  # Active order in manage orders
+    IN_PROGRESS = "in_progress"  # Kitchen is preparing the order
+    READY = "ready"
+    READY_TO_DELIVER = "ready_to_deliver"  # Photo uploaded, ready for delivery person
+    PICKED_UP = "picked_up"
+    REACHED = "reached"
+    DELIVERED = "delivered"
+    CANCELLED = "cancelled"
+
+class OrderLifecycleStatus(str, Enum):
+    PENDING_PAYMENT = "pending_payment"  # Punched, waiting for 20% payment
+    HOLD = "hold"  # On hold, incomplete
+    ACTIVE = "active"  # In manage orders (was confirmed)
+    COMPLETED = "completed"  # Delivered
+    CANCELLED = "cancelled"
+
+class OrderType(str, Enum):
+    SELF = "self"
+    SOMEONE_ELSE = "someone_else"
+
+class Gender(str, Enum):
+    MALE = "male"
+    FEMALE = "female"
+    OTHER = "other"
+
+# ==================== SALES PERSONS (for order_taken_by) ====================
+
+class SalesPerson(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    phone: Optional[str] = None
+    outlet_id: str  # Which outlet this sales person belongs to
+    is_active: bool = True
+    created_by: str  # Super Admin who created
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class SalesPersonCreate(BaseModel):
+    name: str
+    phone: Optional[str] = None
+    outlet_id: str
+
+# ==================== SYSTEM SETTINGS ====================
+
+class SystemSettings(BaseModel):
+    id: str = "system_settings"  # Singleton
+    minimum_payment_percentage: float = 20.0  # Default 20%
+    birthday_mandatory: bool = False  # NEW: Toggle birthday field mandatory/optional
+    max_orders_per_time_slot: int = 0  # 0 = unlimited; otherwise hard cap per outlet+date+time
+    updated_by: Optional[str] = None
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class SystemSettingsUpdate(BaseModel):
+    minimum_payment_percentage: float
+    birthday_mandatory: Optional[bool] = None
+    max_orders_per_time_slot: Optional[int] = None
+
+# NEW: Payment Threshold per Branch
+class BranchPaymentThreshold(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    outlet_id: str
+    minimum_payment_percentage: float = 20.0
+    updated_by: str
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+# NEW: Cake Flavours
+class CakeFlavour(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    is_active: bool = True
+    created_by: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class CakeFlavourCreate(BaseModel):
+    name: str
+
+# NEW: Occasions
+class Occasion(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    is_active: bool = True
+    created_by: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class OccasionCreate(BaseModel):
+    name: str
+
+# NEW: Delivery Time Slots
+class DeliveryTimeSlot(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    time_slot: str  # e.g., "10:00 AM - 12:00 PM"
+    is_active: bool = True
+    created_by: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class TimeSlotCreate(BaseModel):
+    time_slot: str
+
+# NEW: PetPooja Bills Tracking
+class PetPoojaBill(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    bill_number: str
+    outlet_id: str
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    total_amount: float = 0.0
+    items: List[Dict[str, Any]] = []  # List of items in bill
+    has_custom_cake: bool = False  # True if bill contains "Custom Cake" item
+    synced_to_order: bool = False  # True if converted to order
+    order_id: Optional[str] = None  # Order ID if synced
+    sync_attempted_at: Optional[datetime] = None
+    sync_error: Optional[str] = None
+    bill_data: Dict[str, Any] = {}  # Raw bill data from PetPooja
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+# ==================== PERMISSIONS ====================
+# Define all available permissions in the system
+AVAILABLE_PERMISSIONS = {
+    "orders": {
+        "can_create_order": "Create new orders",
+        "can_view_orders": "View orders",
+        "can_edit_orders": "Edit orders",
+        "can_delete_orders": "Delete orders",
+        "can_mark_ready": "Mark orders as ready"
+    },
+    "order_fields": {
+        "can_edit_customer_info": "Edit customer information",
+        "can_edit_flavour": "Edit cake flavour",
+        "can_edit_size": "Edit cake size",
+        "can_edit_delivery_date": "Edit delivery date",
+        "can_edit_delivery_time": "Edit delivery time",
+        "can_edit_total_amount": "Edit total amount",
+        "can_edit_special_instructions": "Edit special instructions",
+        "can_edit_cake_image": "Edit cake image",
+        "can_edit_name_on_cake": "Edit name on cake"
+    },
+    "payments": {
+        "can_record_payment": "Record payments",
+        "can_view_payments": "View payments",
+        "can_refund": "Process refunds"
+    },
+    "management": {
+        "can_manage_outlets": "Manage outlets",
+        "can_manage_zones": "Manage delivery zones",
+        "can_manage_users": "Manage users",
+        "can_view_reports": "View reports",
+        "can_manage_settings": "Manage settings"
+    },
+    "delivery": {
+        "can_assign_delivery": "Assign delivery partners",
+        "can_view_delivery_orders": "View delivery orders",
+        "can_mark_delivered": "Mark orders as delivered"
+    }
+}
+
+# ==================== MODELS ====================
+
+# User Models
+class User(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    email: EmailStr
+    name: str
+    phone: str
+    role: UserRole  # Keep for backward compatibility, but permissions take precedence
+    permissions: List[str] = []  # New: List of permission strings
+    incentive_percentage: float = 0.0  # Incentive for this user
+    password_hash: str
+    outlet_id: Optional[str] = None  # Can be assigned to specific outlet (legacy single)
+    outlet_scope: str = "specific"  # 'all' | 'multiple' | 'specific'
+    outlet_ids: List[str] = []  # For 'multiple' scope
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_by: Optional[str] = None  # User ID of creator
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    name: str
+    phone: str
+    role: UserRole = UserRole.ORDER_MANAGER  # Default role for compatibility
+    permissions: List[str] = []
+    incentive_percentage: float = 0.0
+    password: str
+    outlet_id: Optional[str] = None
+    outlet_scope: str = "specific"  # 'all' | 'multiple' | 'specific'
+    outlet_ids: List[str] = []
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+    phone: str
+    role: UserRole
+    permissions: List[str] = []
+    incentive_percentage: float = 0.0
+    outlet_id: Optional[str] = None
+    outlet_scope: str = "specific"
+    outlet_ids: List[str] = []
+    is_active: bool
+    created_at: datetime
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserResponse
+
+# Outlet Models
+class Outlet(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    address: str
+    city: str
+    phone: str
+    username: str  # Outlet login username
+    password_hash: str  # Outlet login password
+    ready_time_buffer_minutes: int = 30  # Default 30 mins buffer
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_by: str  # Super admin ID
+
+class OutletCreate(BaseModel):
+    name: str
+    address: str
+    city: str
+    phone: str
+    username: str
+    password: str
+    ready_time_buffer_minutes: int = 30
+
+class OutletUpdate(BaseModel):
+    name: str
+    address: str
+    city: str
+    phone: str
+    username: str
+    password: Optional[str] = None  # Optional for updates
+    ready_time_buffer_minutes: int = 30
+
+class OutletResponse(BaseModel):
+    id: str
+    name: str
+    address: str
+    city: str
+    phone: str
+    username: str
+    ready_time_buffer_minutes: int
+    is_active: bool
+    created_at: datetime
+
+# Zone Models
+class Zone(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    outlet_id: str
+    name: str
+    description: Optional[str] = None
+    delivery_charge: float
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class ZoneCreate(BaseModel):
+    outlet_id: str
+    name: str
+    description: Optional[str] = None
+    delivery_charge: float
+
+# Order Models
+class ReceiverInfo(BaseModel):
+    name: str
+    phone: str
+    alternate_phone: Optional[str] = None
+    address: str
+
+class CustomerInfo(BaseModel):
+    name: str
+    phone: str
+    alternate_phone: Optional[str] = None
+    birthday: Optional[str] = None
+    gender: Optional[Gender] = None
+
+class Order(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    order_number: str = Field(default_factory=lambda: str(random.randint(100000, 999999)))
+    
+    # Order Type
+    order_type: OrderType
+    receiver_info: Optional[ReceiverInfo] = None
+    
+    # Customer Info
+    customer_info: CustomerInfo
+    
+    # Delivery Info
+    needs_delivery: bool = False
+    delivery_address: Optional[str] = None
+    delivery_city: Optional[str] = None
+    zone_id: Optional[str] = None
+    
+    # Order Details
+    occasion: Optional[str] = None
+    flavour: str
+    size_pounds: Optional[float] = None
+    base_size: Optional[float] = None  # Base cake size (lbs) used for production sheet
+    cake_image_url: str  # Customer reference image
+    actual_cake_image_url: Optional[str] = None  # Photo uploaded by kitchen after completion
+    secondary_images: List[str] = []
+    name_on_cake: Optional[str] = None
+    special_instructions: Optional[str] = None
+    
+    # Delivery Date & Time
+    delivery_date: str
+    delivery_time: str
+    
+    # Status & Workflow
+    status: OrderStatus = OrderStatus.PENDING
+    lifecycle_status: str = "pending_payment"  # pending_payment, hold, active, completed, cancelled
+    outlet_id: str
+    created_by: str  # User ID
+    order_taken_by: str  # For incentive calculation
+    is_punch_order: bool = False  # True for punch orders, False for hold orders
+    
+    # Payment Info
+    total_amount: float = 0.0
+    paid_amount: float = 0.0
+    pending_amount: float = 0.0
+    delivery_charge: float = 0.0  # Delivery charge included in total
+    discount_amount: float = 0.0  # Discount applied after order is ready (super admin only)
+    payment_synced_from_petpooja: bool = False
+    
+    # PetPooja Integration
+    petpooja_bill_numbers: List[str] = []
+    petpooja_comment: Optional[str] = None  # Our Order ID stored in PetPooja
+    
+    # Flags
+    is_credit_order: bool = False  # NEW: For credit orders
+    is_complementary: bool = False  # NEW: Complementary order (no payment sync)
+    credit_released_by: Optional[str] = None  # Super Admin who released credit order
+    credit_released_at: Optional[datetime] = None
+    pickup_by_customer: bool = False  # Customer picks up instead of delivery
+    voice_instruction_url: Optional[str] = None  # NEW: Voice recording URL
+    is_hold: bool = False  # Not on hold by default
+    is_ready: bool = False
+    ready_at: Optional[datetime] = None
+    transfer_to_outlet_id: Optional[str] = None  # Branch where order is transferred after ready
+    is_deleted: bool = False
+    delete_requested_by: Optional[str] = None
+    delete_approved_by: Optional[str] = None
+    delete_reason: Optional[str] = None
+    delete_status: Optional[str] = None  # "pending" | "approved" | "rejected"
+    
+    # Delivery Tracking
+    assigned_delivery_partner: Optional[str] = None
+    picked_up_at: Optional[datetime] = None
+    reached_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+    delivery_code: Optional[str] = None
+    delivery_otp: Optional[str] = None  # 6-digit OTP for delivery confirmation
+    
+    # WhatsApp
+    whatsapp_alerts: bool = True
+    
+    # Timestamps
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    # Modification tracking
+    modified_after_ready: bool = False
+    modification_count: int = 0
+
+class OrderCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    order_type: OrderType
+    receiver_info: Optional[ReceiverInfo] = None
+    customer_info: CustomerInfo
+    needs_delivery: bool
+    delivery_address: Optional[str] = None
+    delivery_city: Optional[str] = None
+    zone_id: Optional[str] = None
+    custom_delivery_charge: Optional[float] = 0.0  # NEW: For custom delivery zone (no preset zone)
+    occasion: Optional[str] = None
+    flavour: str
+    size_pounds: Optional[float] = None
+    base_size: Optional[float] = None
+    cake_image_url: str
+    secondary_images: List[str] = []
+    name_on_cake: Optional[str] = None
+    special_instructions: Optional[str] = None
+    voice_instruction_url: Optional[str] = None  # NEW
+    delivery_date: str
+    delivery_time: str
+    outlet_id: str
+    total_amount: float = 0.0
+    is_credit_order: bool = False  # NEW
+    order_taken_by: Optional[str] = None  # For incentive tracking
+
+    # Coerce empty strings to None for optional numeric fields (frontend may send '' when blank)
+    @field_validator('size_pounds', 'base_size', 'custom_delivery_charge', mode='before')
+    @classmethod
+    def empty_str_to_none(cls, v):
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
+# Payment Models
+class Payment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    order_id: str
+    amount: float
+    payment_method: str
+    petpooja_bill_number: Optional[str] = None
+    paid_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    recorded_by: str  # User ID
+
+class PaymentCreate(BaseModel):
+    order_id: str
+    amount: float
+    payment_method: str
+    petpooja_bill_number: Optional[str] = None
+
+# Log Models
+class Log(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    order_id: str
+    action: str
+    performed_by: str  # User ID
+    before_data: Optional[Dict[str, Any]] = None
+    after_data: Optional[Dict[str, Any]] = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+# Dashboard Stats Model
+class DashboardStats(BaseModel):
+    total_orders_today: int = 0
+    total_revenue_today: float = 0.0
+    pending_orders: int = 0
+    ready_orders: int = 0
+    delivered_orders: int = 0
+    total_outlets: int = 0
+    total_users: int = 0
+    orders_by_occasion: Dict[str, int] = {}
+
+# ==================== WHATSAPP TEMPLATE MODELS ====================
+
+class WhatsAppTemplateEvent(str, Enum):
+    """WhatsApp notification events for order lifecycle"""
+    ORDER_PLACED = "order_placed"
+    ORDER_CONFIRMED = "order_confirmed"
+    ORDER_READY = "order_ready"
+    OUT_FOR_DELIVERY = "out_for_delivery"
+    DELIVERED = "delivered"
+
+class WhatsAppTemplate(BaseModel):
+    """Configuration for a WhatsApp template for a specific event"""
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    event_type: WhatsAppTemplateEvent
+    campaign_name: str  # AiSensy campaign name
+    template_message: str  # Message with {{1}}, {{2}} placeholders
+    is_enabled: bool = False  # Disabled by default
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class WhatsAppTemplateCreate(BaseModel):
+    event_type: WhatsAppTemplateEvent
+    campaign_name: str
+    template_message: str
+    is_enabled: bool = False
+
+class WhatsAppTemplateUpdate(BaseModel):
+    campaign_name: Optional[str] = None
+    template_message: Optional[str] = None
+    is_enabled: Optional[bool] = None
+
+class WhatsAppTemplateResponse(BaseModel):
+    id: str
+    event_type: WhatsAppTemplateEvent
+    campaign_name: str
+    template_message: str
+    is_enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+class WhatsAppMessageLog(BaseModel):
+    """Log for sent WhatsApp messages"""
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    order_id: str
+    event_type: WhatsAppTemplateEvent
+    recipient_phone: str
+    recipient_name: str
+    campaign_name: str
+    status: str  # sent, failed
+    response_code: int
+    response_message: Optional[str] = None
+    message_id: Optional[str] = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+# ==================== MSG91 WHATSAPP MODELS ====================
+
+class MSG91Config(BaseModel):
+    """MSG91 WhatsApp Configuration"""
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    auth_key: str
+    integrated_number: str  # WhatsApp Business Number
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class MSG91ConfigCreate(BaseModel):
+    auth_key: str
+    integrated_number: str
+
+class MSG91ConfigUpdate(BaseModel):
+    auth_key: Optional[str] = None
+    integrated_number: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class MSG91Template(BaseModel):
+    """MSG91 WhatsApp Template Configuration"""
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    event_type: WhatsAppTemplateEvent
+    template_name: str  # MSG91 template name
+    namespace: str  # MSG91 namespace
+    language_code: str = "en"
+    language_policy: str = "deterministic"
+    variables: List[str] = []  # List of variable names (body_1, body_2, etc.)
+    is_enabled: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class MSG91TemplateCreate(BaseModel):
+    event_type: WhatsAppTemplateEvent
+    template_name: str
+    namespace: str
+    language_code: str = "en"
+    language_policy: str = "deterministic"
+    variables: List[str] = []
+    is_enabled: bool = False
+
+class MSG91TemplateUpdate(BaseModel):
+    template_name: Optional[str] = None
+    namespace: Optional[str] = None
+    language_code: Optional[str] = None
+    language_policy: Optional[str] = None
+    variables: Optional[List[str]] = None
+    is_enabled: Optional[bool] = None
+
+# ==================== AISENSY WHATSAPP MODELS ====================
+
+class AisensyConfig(BaseModel):
+    """AiSensy WhatsApp Configuration"""
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    api_key: str  # AiSensy JWT API key
+    default_source: str = "crm"  # Default source label for tracking
+    default_user_name: str = "US Bakers"  # Default user_name in AiSensy contacts
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class AisensyConfigCreate(BaseModel):
+    api_key: str
+    default_source: Optional[str] = "crm"
+    default_user_name: Optional[str] = "US Bakers"
+
+class AisensyTemplate(BaseModel):
+    """AiSensy Campaign Template Mapping per Event"""
+    model_config = ConfigDict(extra="ignore")
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    event_type: WhatsAppTemplateEvent
+    campaign_name: str  # AiSensy API campaign name (must be Live in AiSensy dashboard)
+    # Ordered list of template parameter keys mapped to order fields.
+    # Allowed keys: customer_name, order_number, delivery_date, delivery_time,
+    # total_amount, pending_amount, outlet_name, flavour, occasion
+    template_params: List[str] = ["customer_name", "order_number", "delivery_date", "delivery_time"]
+    tags: List[str] = []  # AiSensy tags (must exist in AiSensy project to be applied)
+    is_enabled: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class AisensyTemplateCreate(BaseModel):
+    event_type: WhatsAppTemplateEvent
+    campaign_name: str
+    template_params: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+    is_enabled: Optional[bool] = False
+
+# ==================== AUTH UTILITIES ====================
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: timedelta = None):
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+    )
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    user_doc = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if user_doc is None:
+        raise credentials_exception
+    
+    if isinstance(user_doc.get('created_at'), str):
+        user_doc['created_at'] = datetime.fromisoformat(user_doc['created_at'])
+    
+    return User(**user_doc)
+
+def require_role(allowed_roles: List[UserRole]):
+    """Legacy role-based access control - kept for backward compatibility"""
+    async def role_checker(current_user: User = Depends(get_current_user)):
+        if current_user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied. Required roles: {[r.value for r in allowed_roles]}"
+            )
+        return current_user
+    return role_checker
+
+def require_permission(required_permissions: List[str]):
+    """New permission-based access control"""
+    async def permission_checker(current_user: User = Depends(get_current_user)):
+        # Super admin has all permissions
+        if current_user.role == UserRole.SUPER_ADMIN:
+            return current_user
+        
+        # Check if user has any of the required permissions
+        user_permissions = set(current_user.permissions)
+        required_perms = set(required_permissions)
+        
+        if not user_permissions.intersection(required_perms):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied. Required permissions: {required_permissions}"
+            )
+        return current_user
+    return permission_checker
+
+def has_permission(user: User, permission: str) -> bool:
+    """Check if user has a specific permission"""
+    if user.role == UserRole.SUPER_ADMIN:
+        return True
+    return permission in user.permissions
+
+# ==================== AUTH ENDPOINTS ====================
+
+@api_router.post("/auth/login", response_model=Token)
+async def login(login_data: LoginRequest):
+    """Login endpoint for all user roles"""
+    user_doc = await db.users.find_one({"email": login_data.email}, {"_id": 0})
+    
+    if not user_doc:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    if isinstance(user_doc.get('created_at'), str):
+        user_doc['created_at'] = datetime.fromisoformat(user_doc['created_at'])
+    
+    user = User(**user_doc)
+    
+    if not user.is_active:
+        raise HTTPException(status_code=401, detail="User account is inactive")
+    
+    if not verify_password(login_data.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    access_token = create_access_token(data={"sub": user.id, "role": user.role.value})
+    
+    user_response = UserResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        phone=user.phone,
+        role=user.role,
+        permissions=user.permissions,
+        incentive_percentage=user.incentive_percentage,
+        outlet_id=user.outlet_id,
+        is_active=user.is_active,
+        created_at=user.created_at
+    )
+
+    try:
+        await create_activity_log(
+            user=user, action_type="login",
+            description=f"{user.name} ({user.role.value}) logged in",
+            entity_type="user", entity_id=user.id, outlet_id=user.outlet_id
+        )
+    except Exception as _e:
+        logger.error(f"activity_log failed (login): {_e}")
+
+    return Token(access_token=access_token, token_type="bearer", user=user_response)
+
+@api_router.post("/auth/outlet-login", response_model=Token)
+async def outlet_login(login_data: LoginRequest):
+    """Login endpoint for outlets"""
+    outlet_doc = await db.outlets.find_one({"username": login_data.email}, {"_id": 0})
+    
+    if not outlet_doc:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    if isinstance(outlet_doc.get('created_at'), str):
+        outlet_doc['created_at'] = datetime.fromisoformat(outlet_doc['created_at'])
+    
+    if not outlet_doc.get('is_active'):
+        raise HTTPException(status_code=401, detail="Outlet account is inactive")
+    
+    if not verify_password(login_data.password, outlet_doc.get('password_hash')):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    
+    # Create a special outlet user response
+    outlet_user = UserResponse(
+        id=outlet_doc['id'],
+        email=outlet_doc['username'],
+        name=outlet_doc['name'],
+        phone=outlet_doc['phone'],
+        role=UserRole.OUTLET_ADMIN,
+        permissions=["can_create_order", "can_view_orders", "can_edit_orders", "can_record_payment"],
+        incentive_percentage=0.0,
+        outlet_id=outlet_doc['id'],
+        is_active=True,
+        created_at=outlet_doc['created_at']
+    )
+    
+    access_token = create_access_token(data={"sub": outlet_doc['id'], "role": "outlet", "outlet_id": outlet_doc['id']})
+    
+    return Token(access_token=access_token, token_type="bearer", user=outlet_user)
+
+@api_router.get("/auth/me", response_model=UserResponse)
+async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    """Get current logged-in user info"""
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        name=current_user.name,
+        phone=current_user.phone,
+        role=current_user.role,
+        permissions=current_user.permissions if current_user.permissions else [],
+        incentive_percentage=getattr(current_user, 'incentive_percentage', 0.0),
+        outlet_id=current_user.outlet_id,
+        is_active=current_user.is_active,
+        created_at=current_user.created_at
+    )
+
+# ==================== USER MANAGEMENT (Super Admin) ====================
+
+@api_router.post("/users", response_model=UserResponse)
+async def create_user(
+    user_data: UserCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Create a new user (Super Admin only)"""
+    # Check if user already exists
+    existing_user = await db.users.find_one({"email": user_data.email})
+    if existing_user:
+        raise HTTPException(status_code=400, detail="User with this email already exists")
+    
+    # Validate outlet_id / outlet_ids
+    if user_data.outlet_scope == "specific" and user_data.outlet_id:
+        outlet = await db.outlets.find_one({"id": user_data.outlet_id}, {"_id": 0})
+        if not outlet:
+            raise HTTPException(status_code=404, detail="Outlet not found")
+    if user_data.outlet_scope == "multiple" and user_data.outlet_ids:
+        valid = await db.outlets.count_documents({"id": {"$in": user_data.outlet_ids}})
+        if valid != len(user_data.outlet_ids):
+            raise HTTPException(status_code=404, detail="One or more outlets not found")
+    
+    # Auto-apply role permissions if no custom permissions provided
+    permissions = user_data.permissions
+    if not permissions:
+        # Check for role permission template
+        role_template = await db.role_permissions.find_one({"role": user_data.role.value}, {"_id": 0})
+        if role_template:
+            permissions = role_template.get("permissions", [])
+        else:
+            # Use default permissions for the role
+            permissions = get_default_role_permissions(user_data.role.value)
+    
+    # Create user
+    user = User(
+        email=user_data.email,
+        name=user_data.name,
+        phone=user_data.phone,
+        role=user_data.role,
+        permissions=permissions,
+        incentive_percentage=user_data.incentive_percentage,
+        password_hash=get_password_hash(user_data.password),
+        outlet_id=user_data.outlet_id if user_data.outlet_scope == "specific" else None,
+        outlet_scope=user_data.outlet_scope or "specific",
+        outlet_ids=user_data.outlet_ids if user_data.outlet_scope == "multiple" else [],
+        created_by=current_user.id
+    )
+    
+    doc = user.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    
+    await db.users.insert_one(doc)
+    
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        phone=user.phone,
+        role=user.role,
+        permissions=user.permissions,
+        incentive_percentage=user.incentive_percentage,
+        outlet_id=user.outlet_id,
+        outlet_scope=user.outlet_scope,
+        outlet_ids=user.outlet_ids,
+        is_active=user.is_active,
+        created_at=user.created_at
+    )
+
+@api_router.get("/users", response_model=List[UserResponse])
+async def get_all_users(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get all users (Super Admin only)"""
+    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    
+    for user in users:
+        if isinstance(user.get('created_at'), str):
+            user['created_at'] = datetime.fromisoformat(user['created_at'])
+    
+    return [UserResponse(**user) for user in users]
+
+@api_router.get("/users/order-takers")
+async def get_order_takers(current_user: User = Depends(get_current_user)):
+    """Get users who can take orders (for order_taken_by dropdown)"""
+    query = {"is_active": True}
+    
+    # Filter by outlet if not super admin
+    if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+        query["outlet_id"] = current_user.outlet_id
+    
+    users = await db.users.find(query, {"_id": 0, "id": 1, "name": 1, "email": 1, "role": 1, "outlet_id": 1}).to_list(1000)
+    
+    return [{"id": u["id"], "name": u["name"], "email": u["email"], "role": u["role"]} for u in users]
+
+# ==================== SALES PERSONS MANAGEMENT ====================
+
+@api_router.post("/sales-persons")
+async def create_sales_person(
+    person_data: SalesPersonCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Create a sales person (Super Admin only)"""
+    person = SalesPerson(
+        name=person_data.name,
+        phone=person_data.phone,
+        outlet_id=person_data.outlet_id,
+        created_by=current_user.id
+    )
+    
+    doc = person.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    
+    await db.sales_persons.insert_one(doc)
+    
+    return {"message": "Sales person created successfully", "id": person.id}
+
+@api_router.get("/sales-persons")
+async def get_sales_persons(
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get sales persons (filtered by outlet for non-super-admin)"""
+    query = {"is_active": True}
+    
+    # Filter by outlet
+    if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+        query["outlet_id"] = current_user.outlet_id
+    elif outlet_id:
+        query["outlet_id"] = outlet_id
+    
+    persons = await db.sales_persons.find(query, {"_id": 0}).to_list(1000)
+    
+    return persons
+
+@api_router.delete("/sales-persons/{person_id}")
+async def delete_sales_person(
+    person_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Delete/deactivate a sales person (Super Admin only)"""
+    await db.sales_persons.update_one(
+        {"id": person_id},
+        {"$set": {"is_active": False}}
+    )
+    
+    return {"message": "Sales person deactivated"}
+
+# ==================== SYSTEM SETTINGS ====================
+
+@api_router.get("/system-settings")
+async def get_system_settings(current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))):
+    """Get system settings (Super Admin only)"""
+    settings = await db.system_settings.find_one({"id": "system_settings"}, {"_id": 0})
+    
+    if not settings:
+        # Create default settings
+        default_settings = SystemSettings()
+        doc = default_settings.model_dump()
+        doc['updated_at'] = doc['updated_at'].isoformat()
+        await db.system_settings.insert_one(doc)
+        return default_settings.model_dump()
+    
+    return settings
+
+@api_router.patch("/system-settings")
+async def update_system_settings(
+    settings_data: SystemSettingsUpdate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Update system settings (Super Admin only)"""
+    update_data = {
+        "minimum_payment_percentage": settings_data.minimum_payment_percentage,
+        "updated_by": current_user.id,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    # Add birthday_mandatory if provided
+    if settings_data.birthday_mandatory is not None:
+        update_data["birthday_mandatory"] = settings_data.birthday_mandatory
+    if settings_data.max_orders_per_time_slot is not None:
+        update_data["max_orders_per_time_slot"] = max(0, int(settings_data.max_orders_per_time_slot))
+    
+    await db.system_settings.update_one(
+        {"id": "system_settings"},
+        {"$set": update_data},
+        upsert=True
+    )
+    
+    return {"message": "Settings updated successfully"}
+
+@api_router.post("/system-reset")
+async def reset_system(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Reset all system data except super admin user (Super Admin only)"""
+    collections_to_clear = [
+        "orders", "payments", "outlets", "zones", "cake_flavours",
+        "occasions", "delivery_time_slots", "sales_persons", "customers",
+        "branch_payment_thresholds", "role_permissions", "logs",
+        "petpooja_bills", "petpooja_settings"
+    ]
+    cleared = {}
+    for col_name in collections_to_clear:
+        result = await db[col_name].delete_many({})
+        cleared[col_name] = result.deleted_count
+
+    # Delete all non-super_admin users
+    user_result = await db.users.delete_many({"role": {"$ne": "super_admin"}})
+    cleared["users (non-admin)"] = user_result.deleted_count
+
+    # Reset system settings to defaults
+    await db.system_settings.update_one(
+        {"id": "system_settings"},
+        {"$set": {"minimum_payment_percentage": 20.0, "birthday_mandatory": False}},
+        upsert=True
+    )
+
+    # Re-seed default flavours and occasions so New Order form works
+    default_flavours = ["Chocolate Truffle", "Vanilla", "Red Velvet", "Butterscotch", "Black Forest", "Pineapple", "Mango", "Strawberry"]
+    default_occasions = ["Birthday", "Anniversary", "Wedding", "Baby Shower", "Corporate Event"]
+    
+    from uuid import uuid4 as _uuid4
+    now_str = datetime.now(timezone.utc).isoformat()
+    
+    flavour_docs = [{"id": str(_uuid4()), "name": f, "is_active": True, "created_by": current_user.id, "created_at": now_str} for f in default_flavours]
+    occasion_docs = [{"id": str(_uuid4()), "name": o, "is_active": True, "created_by": current_user.id, "created_at": now_str} for o in default_occasions]
+    
+    if flavour_docs:
+        await db.cake_flavours.insert_many(flavour_docs)
+    if occasion_docs:
+        await db.occasions.insert_many(occasion_docs)
+
+    return {"message": "System reset successful", "cleared": cleared}
+
+@api_router.patch("/users/{user_id}/toggle-active")
+async def toggle_user_active(
+    user_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Activate/Deactivate user (Super Admin only)"""
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    new_status = not user['is_active']
+    await db.users.update_one({"id": user_id}, {"$set": {"is_active": new_status}})
+    
+    return {"message": f"User {'activated' if new_status else 'deactivated'} successfully"}
+
+@api_router.patch("/users/{user_id}/permissions")
+async def update_user_permissions(
+    user_id: str,
+    permissions_data: Dict[str, List[str]],
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Update user permissions (Super Admin only)"""
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    new_permissions = permissions_data.get('permissions', [])
+    
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"permissions": new_permissions}}
+    )
+    
+    return {
+        "message": "Permissions updated successfully",
+        "user_id": user_id,
+        "permissions": new_permissions
+    }
+
+@api_router.patch("/users/{user_id}/password")
+async def reset_user_password(
+    user_id: str,
+    password_data: Dict[str, str],
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Reset user password (Super Admin only)"""
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    new_password = password_data.get('password', '')
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    
+    # Hash the new password
+    password_hash = get_password_hash(new_password)
+    
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"password_hash": password_hash}}
+    )
+    
+    return {
+        "message": "Password reset successfully",
+        "user_id": user_id
+    }
+
+@api_router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Delete a user (Super Admin only). Cannot delete self or the last active super admin."""
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+
+    # Safety: don't allow deleting the last active super admin
+    if user.get('role') == UserRole.SUPER_ADMIN.value:
+        active_admins = await db.users.count_documents({
+            "role": UserRole.SUPER_ADMIN.value,
+            "is_active": True,
+            "id": {"$ne": user_id}
+        })
+        if active_admins == 0:
+            raise HTTPException(status_code=400, detail="Cannot delete the last active super admin")
+
+    await db.users.delete_one({"id": user_id})
+
+    # Activity log
+    try:
+        await create_activity_log(
+            user=current_user, action_type="user_deleted",
+            description=f"Deleted user {user.get('name')} ({user.get('email')}) - role: {user.get('role')}",
+            entity_type="user", entity_id=user_id,
+            before_data={"name": user.get('name'), "email": user.get('email'), "role": user.get('role')}
+        )
+    except Exception as _e:
+        logger.error(f"activity_log failed (user_deleted): {_e}")
+
+    return {"message": f"User {user.get('name')} deleted successfully"}
+
+
+class ApplyDiscountRequest(BaseModel):
+    discount_amount: float
+    reason: Optional[str] = None
+
+
+@api_router.post("/orders/{order_id}/apply-discount")
+async def apply_order_discount(
+    order_id: str,
+    payload: ApplyDiscountRequest,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Super admin applies a discount on the pending amount of a READY order.
+
+    Reduces pending_amount and the order's total_amount by `discount_amount`.
+    """
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    status = order.get('status')
+    if status not in ('ready', 'ready_to_deliver'):
+        raise HTTPException(status_code=400, detail="Discount can only be applied on Ready orders")
+
+    if payload.discount_amount is None or payload.discount_amount <= 0:
+        raise HTTPException(status_code=400, detail="Discount amount must be greater than 0")
+
+    pending = float(order.get('pending_amount') or 0)
+    if payload.discount_amount > pending:
+        raise HTTPException(status_code=400, detail=f"Discount (₹{payload.discount_amount}) cannot exceed pending amount (₹{pending})")
+
+    existing_discount = float(order.get('discount_amount') or 0)
+    new_discount = existing_discount + float(payload.discount_amount)
+    new_total = float(order.get('total_amount') or 0) - float(payload.discount_amount)
+    new_pending = pending - float(payload.discount_amount)
+
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "discount_amount": new_discount,
+            "total_amount": new_total,
+            "pending_amount": new_pending,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+
+    try:
+        await create_activity_log(
+            user=current_user, action_type="discount_applied",
+            description=f"Applied ₹{payload.discount_amount} discount on order {order.get('order_number', order_id)} (reason: {payload.reason or 'n/a'})",
+            entity_type="order", entity_id=order_id, order_number=order.get('order_number'),
+            outlet_id=order.get('outlet_id'),
+            metadata={"discount_amount": payload.discount_amount, "reason": payload.reason, "new_total": new_total, "new_pending": new_pending}
+        )
+    except Exception as _e:
+        logger.error(f"activity_log failed (discount_applied): {_e}")
+
+    return {
+        "message": "Discount applied successfully",
+        "discount_amount": new_discount,
+        "total_amount": new_total,
+        "pending_amount": new_pending
+    }
+
+
+
+# ==================== CAKE FLAVOURS MANAGEMENT ====================
+
+@api_router.post("/flavours")
+async def create_flavour(
+    flavour_data: CakeFlavourCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Create a new cake flavour (Super Admin only)"""
+    # Check if flavour already exists
+    existing = await db.cake_flavours.find_one({"name": flavour_data.name}, {"_id": 0})
+    if existing:
+        raise HTTPException(status_code=400, detail="Flavour already exists")
+    
+    flavour = CakeFlavour(
+        name=flavour_data.name,
+        created_by=current_user.id
+    )
+    
+    doc = flavour.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    
+    await db.cake_flavours.insert_one(doc)
+    doc.pop('_id', None)  # Remove MongoDB ObjectId before returning
+    return {"message": "Flavour created successfully", "flavour": doc}
+
+@api_router.get("/flavours")
+async def get_flavours():
+    """Get all active cake flavours"""
+    flavours = await db.cake_flavours.find({"is_active": True}, {"_id": 0}).to_list(100)
+    return flavours
+
+@api_router.delete("/flavours/{flavour_id}")
+async def delete_flavour(
+    flavour_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Soft delete a flavour (Super Admin only)"""
+    await db.cake_flavours.update_one(
+        {"id": flavour_id},
+        {"$set": {"is_active": False}}
+    )
+    return {"message": "Flavour deleted successfully"}
+
+# ==================== OCCASIONS MANAGEMENT ====================
+
+@api_router.post("/occasions")
+async def create_occasion(
+    occasion_data: OccasionCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Create a new occasion (Super Admin only)"""
+    existing = await db.occasions.find_one({"name": occasion_data.name}, {"_id": 0})
+    if existing:
+        raise HTTPException(status_code=400, detail="Occasion already exists")
+    
+    occasion = Occasion(
+        name=occasion_data.name,
+        created_by=current_user.id
+    )
+    
+    doc = occasion.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    
+    await db.occasions.insert_one(doc)
+    doc.pop('_id', None)  # Remove MongoDB ObjectId before returning
+    return {"message": "Occasion created successfully", "occasion": doc}
+
+@api_router.get("/occasions")
+async def get_occasions():
+    """Get all active occasions"""
+    occasions = await db.occasions.find({"is_active": True}, {"_id": 0}).to_list(100)
+    return occasions
+
+@api_router.delete("/occasions/{occasion_id}")
+async def delete_occasion(
+    occasion_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Soft delete an occasion (Super Admin only)"""
+    await db.occasions.update_one(
+        {"id": occasion_id},
+        {"$set": {"is_active": False}}
+    )
+    return {"message": "Occasion deleted successfully"}
+
+# ==================== DELIVERY TIME SLOTS MANAGEMENT ====================
+
+@api_router.post("/time-slots")
+async def create_time_slot(
+    slot_data: TimeSlotCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Create a new delivery time slot (Super Admin only)"""
+    existing = await db.delivery_time_slots.find_one({"time_slot": slot_data.time_slot}, {"_id": 0})
+    if existing:
+        if not existing.get('is_active', True):
+            # Reactivate soft-deleted slot
+            await db.delivery_time_slots.update_one(
+                {"time_slot": slot_data.time_slot},
+                {"$set": {"is_active": True}}
+            )
+            return {"message": "Time slot reactivated successfully", "time_slot": {**existing, "is_active": True}}
+        raise HTTPException(status_code=400, detail="Time slot already exists")
+    
+    slot = DeliveryTimeSlot(
+        time_slot=slot_data.time_slot,
+        created_by=current_user.id
+    )
+    
+    doc = slot.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    
+    await db.delivery_time_slots.insert_one(doc)
+    doc.pop('_id', None)  # Remove MongoDB ObjectId before returning
+    return {"message": "Time slot created successfully", "time_slot": doc}
+
+@api_router.get("/time-slots")
+async def get_time_slots():
+    """Get all active delivery time slots"""
+    slots = await db.delivery_time_slots.find({"is_active": True}, {"_id": 0}).to_list(100)
+    return slots
+
+@api_router.delete("/time-slots/{slot_id}")
+async def delete_time_slot(
+    slot_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Soft delete a time slot (Super Admin only)"""
+    await db.delivery_time_slots.update_one(
+        {"id": slot_id},
+        {"$set": {"is_active": False}}
+    )
+    return {"message": "Time slot deleted successfully"}
+
+# ==================== BRANCH PAYMENT THRESHOLD ====================
+
+@api_router.post("/branch-payment-threshold")
+async def set_branch_threshold(
+    threshold_data: Dict[str, Any],
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Set payment threshold for a specific branch (Super Admin only)"""
+    outlet_id = threshold_data.get('outlet_id')
+    percentage = threshold_data.get('minimum_payment_percentage', 20.0)
+    
+    # Check if threshold exists for this branch
+    existing = await db.branch_payment_thresholds.find_one({"outlet_id": outlet_id}, {"_id": 0})
+    
+    if existing:
+        # Update existing
+        await db.branch_payment_thresholds.update_one(
+            {"outlet_id": outlet_id},
+            {"$set": {
+                "minimum_payment_percentage": percentage,
+                "updated_by": current_user.id,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+    else:
+        # Create new
+        threshold = BranchPaymentThreshold(
+            outlet_id=outlet_id,
+            minimum_payment_percentage=percentage,
+            updated_by=current_user.id
+        )
+        doc = threshold.model_dump()
+        doc['updated_at'] = doc['updated_at'].isoformat()
+        await db.branch_payment_thresholds.insert_one(doc)
+    
+    return {"message": "Branch payment threshold updated successfully"}
+
+@api_router.get("/branch-payment-threshold/{outlet_id}")
+async def get_branch_threshold(outlet_id: str):
+    """Get payment threshold for a specific branch"""
+    threshold = await db.branch_payment_thresholds.find_one({"outlet_id": outlet_id}, {"_id": 0})
+    if not threshold:
+        # Return default
+        return {"minimum_payment_percentage": 20.0}
+    return threshold
+
+# ==================== SUPER ADMIN IMPERSONATION ====================
+
+@api_router.post("/impersonate/{user_id}")
+async def impersonate_user(
+    user_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Super Admin can impersonate any user (get their token)"""
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not user.get('is_active', True):
+        raise HTTPException(status_code=400, detail="User is inactive")
+    
+    # Create token for the target user
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user['id'], "role": user['role']},
+        expires_delta=access_token_expires
+    )
+    
+    return Token(
+        access_token=access_token,
+        token_type="bearer",
+        user=UserResponse(**user)
+    )
+
+# ==================== PETPOOJA BILLS TRACKING ====================
+
+@api_router.get("/petpooja-bills")
+async def get_petpooja_bills(
+    outlet_id: Optional[str] = None,
+    synced: Optional[bool] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get all PetPooja bills with sync status"""
+    query = {}
+    
+    # Filter by outlet if provided
+    if outlet_id:
+        query["outlet_id"] = outlet_id
+    elif current_user.outlet_id and current_user.role != UserRole.SUPER_ADMIN:
+        # Non-super admin can only see their outlet's bills
+        query["outlet_id"] = current_user.outlet_id
+    
+    # Filter by sync status if provided
+    if synced is not None:
+        query["synced_to_order"] = synced
+    
+    bills = await db.petpooja_bills.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return bills
+
+@api_router.post("/petpooja-bills/sync/{bill_id}")
+async def sync_petpooja_bill(
+    bill_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Manually sync a PetPooja bill to create an order"""
+    bill = await db.petpooja_bills.find_one({"id": bill_id}, {"_id": 0})
+    if not bill:
+        raise HTTPException(status_code=404, detail="Bill not found")
+    
+    if bill.get('synced_to_order'):
+        raise HTTPException(status_code=400, detail="Bill already synced")
+    
+    if not bill.get('has_custom_cake'):
+        raise HTTPException(status_code=400, detail="Bill does not contain Custom Cake item")
+    
+    # TODO: Implement logic to create order from bill
+    # For now, just mark as attempted
+    await db.petpooja_bills.update_one(
+        {"id": bill_id},
+        {"$set": {
+            "sync_attempted_at": datetime.now(timezone.utc).isoformat(),
+            "sync_error": "Manual sync not yet implemented - coming soon"
+        }}
+    )
+    
+    return {"message": "Sync attempted - feature under development"}
+
+# ==================== CREDIT ORDERS ====================
+
+@api_router.post("/orders/{order_id}/mark-credit")
+async def mark_order_as_credit(
+    order_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Mark order as credit order - bypasses payment threshold and moves to Manage Orders (Super Admin only)"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "is_credit_order": True,
+            "status": "confirmed",
+            "lifecycle_status": "active",
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    return {"message": "Order marked as credit successfully"}
+
+@api_router.get("/orders/credit")
+async def get_credit_orders(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
+):
+    """Get all credit orders"""
+    orders = await db.orders.find(
+        {"is_credit_order": True, "is_deleted": False},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(500)
+    return orders
+
+@api_router.post("/orders/{order_id}/mark-complementary")
+async def mark_order_complementary(
+    order_id: str,
+    is_complementary: bool = True,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Mark/unmark a credit order as complementary"""
+    order = await db.orders.find_one({"id": order_id, "is_credit_order": True}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Credit order not found")
+    
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "is_complementary": is_complementary,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    return {"message": f"Order {'marked as complementary' if is_complementary else 'unmarked as complementary'}"}
+
+@api_router.post("/orders/{order_id}/set-pickup")
+async def set_order_pickup(
+    order_id: str,
+    pickup: bool = True,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
+):
+    """Set order as customer pickup (no delivery needed)"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    update_fields = {
+        "pickup_by_customer": pickup,
+        "needs_delivery": not pickup,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": update_fields}
+    )
+    return {"message": f"Order set as {'customer pickup' if pickup else 'delivery'}"}
+
+@api_router.post("/orders/{order_id}/release-credit")
+async def release_credit_order(
+    order_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Super Admin releases credit order from pending to manage"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if not order.get('is_credit_order'):
+        raise HTTPException(status_code=400, detail="Order is not a credit order")
+    
+    # Move order to active/manage orders
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "lifecycle_status": "active",
+            "status": "confirmed",
+            "credit_released_by": current_user.id,
+            "credit_released_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    return {"message": "Credit order released to manage orders"}
+
+@api_router.get("/orders/credit-pending")
+async def get_credit_pending_orders(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get all credit orders pending release"""
+    orders = await db.orders.find({
+        "is_credit_order": True,
+        "lifecycle_status": "pending_payment"
+    }, {"_id": 0}).to_list(1000)
+    return orders
+
+
+
+# ==================== OUTLET MANAGEMENT (Super Admin) ====================
+
+@api_router.post("/outlets", response_model=OutletResponse)
+async def create_outlet(
+    outlet_data: OutletCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Create a new outlet (Super Admin only)"""
+    # Check if username already exists
+    existing = await db.outlets.find_one({"username": outlet_data.username})
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    
+    outlet = Outlet(
+        name=outlet_data.name,
+        address=outlet_data.address,
+        city=outlet_data.city,
+        phone=outlet_data.phone,
+        username=outlet_data.username,
+        password_hash=get_password_hash(outlet_data.password),
+        ready_time_buffer_minutes=outlet_data.ready_time_buffer_minutes,
+        created_by=current_user.id
+    )
+    
+    doc = outlet.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    
+    await db.outlets.insert_one(doc)
+    
+    return OutletResponse(**outlet.model_dump())
+
+@api_router.get("/outlets", response_model=List[OutletResponse])
+async def get_all_outlets(current_user: User = Depends(get_current_user)):
+    """Get all outlets"""
+    outlets = await db.outlets.find({}, {"_id": 0}).to_list(1000)
+    
+    for outlet in outlets:
+        if isinstance(outlet.get('created_at'), str):
+            outlet['created_at'] = datetime.fromisoformat(outlet['created_at'])
+    
+    return [OutletResponse(**outlet) for outlet in outlets]
+
+@api_router.patch("/outlets/{outlet_id}")
+async def update_outlet(
+    outlet_id: str,
+    outlet_data: OutletUpdate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Update outlet (Super Admin only)"""
+    outlet = await db.outlets.find_one({"id": outlet_id}, {"_id": 0})
+    if not outlet:
+        raise HTTPException(status_code=404, detail="Outlet not found")
+    
+    # Prepare update data
+    update_data = {
+        "name": outlet_data.name,
+        "address": outlet_data.address,
+        "city": outlet_data.city,
+        "phone": outlet_data.phone,
+        "username": outlet_data.username,
+        "ready_time_buffer_minutes": outlet_data.ready_time_buffer_minutes
+    }
+    
+    # Only update password if provided
+    if outlet_data.password:
+        update_data['password_hash'] = get_password_hash(outlet_data.password)
+    
+    await db.outlets.update_one({"id": outlet_id}, {"$set": update_data})
+    
+    return {"message": "Outlet updated successfully"}
+
+# ==================== ZONE MANAGEMENT (Super Admin) ====================
+
+@api_router.post("/zones", response_model=Dict[str, Any])
+async def create_zone(
+    zone_data: ZoneCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Create a delivery zone (Super Admin only)"""
+    # Validate outlet exists
+    outlet = await db.outlets.find_one({"id": zone_data.outlet_id}, {"_id": 0})
+    if not outlet:
+        raise HTTPException(status_code=404, detail="Outlet not found")
+    
+    zone = Zone(
+        outlet_id=zone_data.outlet_id,
+        name=zone_data.name,
+        delivery_charge=zone_data.delivery_charge
+    )
+    
+    doc = zone.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    
+    await db.zones.insert_one(doc)
+    
+    return {"message": "Zone created successfully", "zone": zone.model_dump()}
+
+@api_router.get("/zones")
+async def get_zones(outlet_id: Optional[str] = None, current_user: User = Depends(get_current_user)):
+    """Get all zones, optionally filtered by outlet"""
+    query = {} if not outlet_id else {"outlet_id": outlet_id}
+    zones = await db.zones.find(query, {"_id": 0}).to_list(1000)
+    
+    for zone in zones:
+        if isinstance(zone.get('created_at'), str):
+            zone['created_at'] = datetime.fromisoformat(zone['created_at'])
+    
+    return zones
+
+@api_router.patch("/zones/{zone_id}/toggle-active")
+async def toggle_zone_active(
+    zone_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Toggle zone active status (Super Admin only)"""
+    zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
+    if not zone:
+        raise HTTPException(status_code=404, detail="Zone not found")
+    
+    new_status = not zone.get('is_active', True)
+    
+    await db.zones.update_one(
+        {"id": zone_id},
+        {"$set": {"is_active": new_status}}
+    )
+    
+    return {
+        "message": f"Zone {'activated' if new_status else 'deactivated'} successfully",
+        "is_active": new_status
+    }
+
+@api_router.patch("/zones/{zone_id}")
+async def update_zone(
+    zone_id: str,
+    update_data: Dict[str, Any],
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Update zone details (Super Admin only)"""
+    zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
+    if not zone:
+        raise HTTPException(status_code=404, detail="Zone not found")
+    
+    update_fields = {}
+    allowed_fields = ['name', 'description', 'delivery_charge']
+    
+    for field in allowed_fields:
+        if field in update_data:
+            update_fields[field] = update_data[field]
+    
+    if update_fields:
+        await db.zones.update_one({"id": zone_id}, {"$set": update_fields})
+    
+    return {"message": "Zone updated successfully"}
+
+@api_router.delete("/zones/{zone_id}")
+async def delete_zone(
+    zone_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Delete a zone (Super Admin only)"""
+    zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
+    if not zone:
+        raise HTTPException(status_code=404, detail="Zone not found")
+    
+    # Check if zone is being used in any orders
+    orders_with_zone = await db.orders.find_one({"zone_id": zone_id, "is_deleted": False}, {"_id": 0})
+    if orders_with_zone:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete zone. It is being used in existing orders. You can mark it as inactive instead."
+        )
+    
+    await db.zones.delete_one({"id": zone_id})
+    
+    return {"message": "Zone deleted successfully"}
+
+# ==================== IMAGE UPLOAD ====================
+
+@api_router.post("/upload-image")
+async def upload_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    """Upload an image (JPG/PNG/HEIC/HEIF) and return the URL. Auto-converts HEIC->JPEG."""
+    try:
+        filename_lower = (file.filename or '').lower()
+        is_heic = filename_lower.endswith('.heic') or filename_lower.endswith('.heif') \
+            or (file.content_type or '').lower() in ('image/heic', 'image/heif')
+
+        if not is_heic and file.content_type and not file.content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="File must be an image")
+
+        contents = await file.read()
+
+        if is_heic:
+            if not HEIC_SUPPORTED:
+                raise HTTPException(status_code=400, detail="HEIC support not available on server")
+            try:
+                img = PILImage.open(BytesIO(contents)).convert('RGB')
+                unique_filename = f"{uuid.uuid4()}.jpg"
+                file_path = ROOT_DIR / "uploads" / unique_filename
+                img.save(file_path, format='JPEG', quality=88)
+            except Exception as e:
+                logger.error(f"HEIC convert failed: {e}")
+                raise HTTPException(status_code=400, detail="Failed to convert HEIC image")
+        else:
+            file_extension = (file.filename or 'img').split('.')[-1]
+            unique_filename = f"{uuid.uuid4()}.{file_extension}"
+            file_path = ROOT_DIR / "uploads" / unique_filename
+            with open(file_path, 'wb') as f:
+                f.write(contents)
+
+        image_url = f"/api/uploads/{unique_filename}"
+        # Return both keys for frontend compatibility (some callers use file_url)
+        return {"url": image_url, "file_url": image_url, "filename": unique_filename}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Image upload failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Image upload failed")
+
+# ==================== ORDER MANAGEMENT ====================
+
+@api_router.post("/orders")
+async def create_order(
+    order_data: OrderCreate,
+    is_punch_order: bool = False,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER, UserRole.FACTORY_MANAGER]))
+):
+    """Create a new order (punch or hold) - Only for admins and order managers"""
+    # Validate delivery date/time is not in the past
+    if order_data.delivery_date and order_data.delivery_time:
+        try:
+            # Parse delivery_time - handle both "HH:MM" and "HH:MM AM/PM" formats
+            delivery_time_str = order_data.delivery_time.strip()
+            delivery_date_str = order_data.delivery_date.strip()
+            
+            # Try 24h format first (HH:MM)
+            try:
+                delivery_dt = datetime.strptime(f"{delivery_date_str} {delivery_time_str}", "%Y-%m-%d %H:%M")
+            except ValueError:
+                # Try 12h format (HH:MM AM/PM)
+                try:
+                    delivery_dt = datetime.strptime(f"{delivery_date_str} {delivery_time_str}", "%Y-%m-%d %I:%M %p")
+                except ValueError:
+                    delivery_dt = None
+            
+            if delivery_dt:
+                now = datetime.now()
+                if delivery_dt <= now:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail="Delivery date and time cannot be in the past. Please select a future date/time."
+                    )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(f"Could not validate delivery date/time: {e}")
+    elif order_data.delivery_date:
+        try:
+            delivery_date = datetime.strptime(order_data.delivery_date.strip(), "%Y-%m-%d").date()
+            today = datetime.now().date()
+            if delivery_date < today:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Delivery date cannot be in the past."
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(f"Could not validate delivery date: {e}")
+    
+    # Validate outlet exists
+    outlet = await db.outlets.find_one({"id": order_data.outlet_id}, {"_id": 0})
+    if not outlet:
+        raise HTTPException(status_code=404, detail="Outlet not found")
+
+    # Time-slot cap: prevent overbooking the same delivery time at this outlet
+    sys_settings = await db.system_settings.find_one({"id": "system_settings"}, {"_id": 0}) or {}
+    slot_limit = int(sys_settings.get('max_orders_per_time_slot') or 0)
+    if slot_limit > 0 and order_data.delivery_date and order_data.delivery_time:
+        existing_in_slot = await db.orders.count_documents({
+            "outlet_id": order_data.outlet_id,
+            "delivery_date": order_data.delivery_date,
+            "delivery_time": order_data.delivery_time,
+            "is_deleted": False,
+        })
+        if existing_in_slot >= slot_limit:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Time slot {order_data.delivery_time} on {order_data.delivery_date} is fully booked ({existing_in_slot}/{slot_limit}). Pick another slot."
+            )
+
+    # Calculate delivery charge if needed
+    delivery_charge = 0.0
+    if order_data.needs_delivery and order_data.zone_id:
+        if order_data.zone_id != 'custom':
+            zone = await db.zones.find_one({"id": order_data.zone_id}, {"_id": 0})
+            if not zone:
+                raise HTTPException(status_code=404, detail="Zone not found. Please create zones first in Zone Management.")
+            delivery_charge = zone.get('delivery_charge', 0.0)
+        else:
+            # Custom zone - delivery charge handled separately
+            delivery_charge = order_data.custom_delivery_charge if hasattr(order_data, 'custom_delivery_charge') else 0.0
+    
+    # Calculate total amount (cake + delivery)
+    total_amount = order_data.total_amount + delivery_charge
+    pending_amount = total_amount
+    
+    # Validate required fields for completeness
+    is_complete = all([
+        order_data.customer_info.name,
+        order_data.customer_info.phone,
+        order_data.delivery_date,
+        order_data.delivery_time,
+        order_data.flavour,
+        order_data.cake_image_url,
+        total_amount > 0
+    ])
+    
+    # Determine lifecycle status based on completeness and type
+    if not is_complete:
+        # Incomplete orders → Hold (need more details)
+        lifecycle_status = "hold"
+        order_status = OrderStatus.ON_HOLD
+        is_hold = True
+    elif is_punch_order:
+        # Complete punch orders → Pending Payment
+        lifecycle_status = "pending_payment"
+        order_status = OrderStatus.PENDING
+        is_hold = False
+    else:
+        # Complete hold orders → Active (ready for kitchen)
+        lifecycle_status = "active"
+        order_status = OrderStatus.PENDING
+        is_hold = False
+    
+    # Create order
+    order = Order(
+        order_type=order_data.order_type,
+        receiver_info=order_data.receiver_info,
+        customer_info=order_data.customer_info,
+        needs_delivery=order_data.needs_delivery,
+        delivery_address=order_data.delivery_address,
+        delivery_city=order_data.delivery_city,
+        zone_id=order_data.zone_id,
+        occasion=order_data.occasion,
+        flavour=order_data.flavour,
+        size_pounds=order_data.size_pounds,
+        base_size=order_data.base_size,
+        cake_image_url=order_data.cake_image_url,
+        secondary_images=order_data.secondary_images,
+        name_on_cake=order_data.name_on_cake,
+        special_instructions=order_data.special_instructions,
+        delivery_date=order_data.delivery_date,
+        delivery_time=order_data.delivery_time,
+        status=order_status,
+        lifecycle_status=lifecycle_status,
+        outlet_id=order_data.outlet_id,
+        created_by=current_user.id,
+        order_taken_by=order_data.order_taken_by or current_user.id,
+        is_punch_order=is_punch_order,
+        total_amount=total_amount,
+        pending_amount=pending_amount,
+        is_hold=is_hold,
+        delivery_charge=delivery_charge,
+        delivery_otp=str(random.randint(100000, 999999)) if order_data.needs_delivery else None
+    )
+    
+    doc = order.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    doc['updated_at'] = doc['updated_at'].isoformat()
+    
+    await db.orders.insert_one(doc)
+    
+    # Send WhatsApp notification
+    try:
+        await send_whatsapp_notification(order.id, WhatsAppTemplateEvent.ORDER_PLACED)
+    except Exception as e:
+        logger.error(f"WhatsApp notification failed: {str(e)}")
+
+    # Activity log (audit trail)
+    try:
+        await create_activity_log(
+            user=current_user,
+            action_type="order_created",
+            description=f"Created {'Punch' if is_punch_order else 'Hold'} order {order.order_number} for {order_data.customer_info.name} - ₹{total_amount}",
+            entity_type="order",
+            entity_id=order.id,
+            order_number=order.order_number,
+            outlet_id=order.outlet_id,
+            after_data={
+                "order_number": order.order_number,
+                "customer_name": order_data.customer_info.name,
+                "customer_phone": order_data.customer_info.phone,
+                "total_amount": total_amount,
+                "delivery_charge": delivery_charge,
+                "delivery_date": order_data.delivery_date,
+                "delivery_time": order_data.delivery_time,
+                "is_punch_order": is_punch_order,
+                "lifecycle_status": lifecycle_status
+            }
+        )
+    except Exception as _e:
+        logger.error(f"activity_log failed (order_create): {_e}")
+
+    return {
+        "message": f"{'Punch' if is_punch_order else 'Hold'} order created successfully",
+        "order_id": order.id,
+        "order_number": order.order_number,
+        "lifecycle_status": lifecycle_status,
+        "total_amount": total_amount
+    }
+
+@api_router.get("/orders/hold")
+async def get_hold_orders(
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get all orders on hold"""
+    query = {"is_hold": True, "is_deleted": False}
+    
+    # Filter by outlet if user is not super admin
+    if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+        query["outlet_id"] = current_user.outlet_id
+    elif outlet_id:
+        query["outlet_id"] = outlet_id
+    
+    orders = await db.orders.find(query, {"_id": 0}).to_list(1000)
+    
+    for order in orders:
+        if isinstance(order.get('created_at'), str):
+            order['created_at'] = datetime.fromisoformat(order['created_at'])
+        if isinstance(order.get('updated_at'), str):
+            order['updated_at'] = datetime.fromisoformat(order['updated_at'])
+    
+    return orders
+
+@api_router.get("/orders/pending")
+async def get_pending_orders(
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get punch orders waiting for payment (permission-based access)"""
+    query = {"lifecycle_status": "pending_payment", "is_deleted": False}
+    
+    # Filter by outlet if user is not super admin
+    if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+        query["outlet_id"] = current_user.outlet_id
+    elif outlet_id:
+        query["outlet_id"] = outlet_id
+    
+    orders = await db.orders.find(query, {"_id": 0}).to_list(1000)
+    
+    # Convert date fields
+    for order in orders:
+        if isinstance(order.get('created_at'), str):
+            order['created_at'] = datetime.fromisoformat(order['created_at'])
+        if isinstance(order.get('updated_at'), str):
+            order['updated_at'] = datetime.fromisoformat(order['updated_at'])
+    
+    orders = await enrich_orders_with_names(orders)
+    return orders
+
+@api_router.post("/orders/{order_id}/release")
+async def release_hold_order(
+    order_id: str,
+    order_updates: Dict[str, Any],
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
+):
+    """Release a hold order by completing required info"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if order.get('lifecycle_status') != 'hold':
+        raise HTTPException(status_code=400, detail="Order is not on hold")
+    
+    # Get branch-specific threshold first, then fall back to global
+    outlet_id = order.get('outlet_id')
+    min_percentage = 20.0  # Default
+    if outlet_id:
+        branch_threshold = await db.branch_payment_thresholds.find_one({"outlet_id": outlet_id}, {"_id": 0})
+        if branch_threshold:
+            min_percentage = branch_threshold.get('minimum_payment_percentage', 20.0)
+        else:
+            settings = await db.system_settings.find_one({"id": "system_settings"}, {"_id": 0})
+            if settings:
+                min_percentage = settings.get('minimum_payment_percentage', 20.0)
+    else:
+        settings = await db.system_settings.find_one({"id": "system_settings"}, {"_id": 0})
+        min_percentage = settings.get('minimum_payment_percentage', 20.0) if settings else 20.0
+    
+    # Update order with completed info
+    update_data = order_updates.copy()
+    
+    # Calculate payment percentage
+    paid_amount = update_data.get('paid_amount', order.get('paid_amount', 0))
+    total_amount = order['total_amount']
+    payment_percentage = (paid_amount / total_amount * 100) if total_amount > 0 else 0
+    
+    # Determine new lifecycle status
+    if payment_percentage >= min_percentage:
+        update_data['lifecycle_status'] = 'active'
+        update_data['status'] = 'confirmed'
+    else:
+        update_data['lifecycle_status'] = 'pending_payment'
+        update_data['status'] = 'pending'
+    
+    update_data['is_hold'] = False
+    update_data['pending_amount'] = total_amount - paid_amount
+    update_data['updated_at'] = datetime.now(timezone.utc).isoformat()
+    
+    await db.orders.update_one({"id": order_id}, {"$set": update_data})
+    
+    return {
+        "message": "Order released successfully",
+        "lifecycle_status": update_data['lifecycle_status'],
+        "payment_percentage": payment_percentage
+    }
+
+@api_router.get("/orders/manage")
+async def get_manage_orders(
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get all active orders in manage (not hold, not pending, not deleted)"""
+    query = {"lifecycle_status": "active", "is_deleted": False}
+    
+    # Factory Manager and Super Admin can see all orders
+    if current_user.role not in [UserRole.SUPER_ADMIN, UserRole.FACTORY_MANAGER]:
+        if current_user.outlet_id:
+            query["outlet_id"] = current_user.outlet_id
+    elif outlet_id:
+        query["outlet_id"] = outlet_id
+    
+    orders = await db.orders.find(query, {"_id": 0}).to_list(1000)
+    
+    # Enrich orders with PetPooja bill numbers from petpooja_bills and payments collections
+    order_ids = [o['id'] for o in orders]
+    if order_ids:
+        petpooja_bills = await db.petpooja_bills.find(
+            {"order_id": {"$in": order_ids}},
+            {"_id": 0, "order_id": 1, "bill_number": 1}
+        ).to_list(5000)
+        
+        bill_lookup = {}
+        for bill in petpooja_bills:
+            oid = bill.get('order_id')
+            if oid not in bill_lookup:
+                bill_lookup[oid] = []
+            bn = bill.get('bill_number')
+            if bn and bn not in bill_lookup[oid]:
+                bill_lookup[oid].append(bn)
+        
+        payments_with_bills = await db.payments.find(
+            {"order_id": {"$in": order_ids}, "petpooja_bill_number": {"$ne": None}},
+            {"_id": 0, "order_id": 1, "petpooja_bill_number": 1}
+        ).to_list(5000)
+        
+        for pay in payments_with_bills:
+            oid = pay.get('order_id')
+            bn = pay.get('petpooja_bill_number')
+            if oid not in bill_lookup:
+                bill_lookup[oid] = []
+            if bn and bn not in bill_lookup[oid]:
+                bill_lookup[oid].append(bn)
+        
+        for order in orders:
+            existing_bills = order.get('petpooja_bill_numbers', [])
+            extra_bills = bill_lookup.get(order['id'], [])
+            all_bills = list(set(existing_bills + extra_bills))
+            order['petpooja_bill_numbers'] = all_bills
+    
+    for order in orders:
+        if isinstance(order.get('created_at'), str):
+            order['created_at'] = datetime.fromisoformat(order['created_at'])
+        if isinstance(order.get('updated_at'), str):
+            order['updated_at'] = datetime.fromisoformat(order['updated_at'])
+    
+    orders = await enrich_orders_with_names(orders)
+    return orders
+
+@api_router.delete("/orders/{order_id}")
+async def delete_order(
+    order_id: str,
+    reason: Optional[str] = None,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER, UserRole.FACTORY_MANAGER]))
+):
+    """Delete an order. Super admin deletes directly; others raise an approval request with a reason."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    if not reason or not reason.strip():
+        raise HTTPException(status_code=400, detail="A reason is required to delete this order")
+
+    if current_user.role == UserRole.SUPER_ADMIN:
+        # Super admin: direct delete (no approval required)
+        await db.orders.update_one(
+            {"id": order_id},
+            {"$set": {
+                "is_deleted": True,
+                "deleted_at": datetime.now(timezone.utc).isoformat(),
+                "deleted_by": current_user.id,
+                "delete_approved_by": current_user.id,
+                "delete_requested_by": current_user.id,
+                "delete_reason": reason.strip(),
+                "delete_status": "approved",
+            }}
+        )
+        try:
+            await create_activity_log(
+                user=current_user, action_type="order_deleted",
+                description=f"Deleted order {order.get('order_number', order_id)} - reason: {reason.strip()}",
+                entity_type="order", entity_id=order_id, order_number=order.get('order_number'),
+                outlet_id=order.get('outlet_id'), metadata={"reason": reason.strip()}
+            )
+        except Exception as _e:
+            logger.error(f"activity_log failed (order_deleted): {_e}")
+        return {"message": "Order deleted successfully"}
+    else:
+        # Others: raise an approval request, order stays visible
+        await db.orders.update_one(
+            {"id": order_id},
+            {"$set": {
+                "delete_requested_by": current_user.id,
+                "delete_reason": reason.strip(),
+                "delete_status": "pending",
+            }}
+        )
+        try:
+            await create_activity_log(
+                user=current_user, action_type="order_delete_requested",
+                description=f"Requested delete for order {order.get('order_number', order_id)} - reason: {reason.strip()}",
+                entity_type="order", entity_id=order_id, order_number=order.get('order_number'),
+                outlet_id=order.get('outlet_id'), metadata={"reason": reason.strip()}
+            )
+        except Exception as _e:
+            logger.error(f"activity_log failed (order_delete_requested): {_e}")
+        return {"message": "Delete request submitted for super admin approval"}
+
+
+@api_router.post("/orders/{order_id}/approve-delete")
+async def approve_delete_order(
+    order_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Super admin approves a pending delete request"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("delete_status") != "pending":
+        raise HTTPException(status_code=400, detail="No pending delete request for this order")
+
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "is_deleted": True,
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+            "deleted_by": current_user.id,
+            "delete_approved_by": current_user.id,
+            "delete_status": "approved",
+        }}
+    )
+    return {"message": "Delete approved"}
+
+
+@api_router.post("/orders/{order_id}/reject-delete")
+async def reject_delete_order(
+    order_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Super admin rejects a pending delete request"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get("delete_status") != "pending":
+        raise HTTPException(status_code=400, detail="No pending delete request for this order")
+
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "delete_status": "rejected",
+            "delete_requested_by": None,
+            "delete_reason": None,
+        }}
+    )
+    return {"message": "Delete request rejected"}
+
+
+@api_router.get("/orders/delete-requests")
+async def get_delete_requests(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get all orders with a pending delete request"""
+    orders = await db.orders.find(
+        {"delete_status": "pending", "is_deleted": False},
+        {"_id": 0}
+    ).sort("updated_at", -1).to_list(500)
+    orders = await enrich_orders_with_names(orders)
+    return orders
+
+@api_router.get("/orders/deleted")
+async def get_deleted_orders(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
+):
+    """Get all deleted orders"""
+    query = {"is_deleted": True}
+    
+    # Outlet admin can only see their outlet's deleted orders
+    if current_user.role == UserRole.OUTLET_ADMIN and current_user.outlet_id:
+        query["outlet_id"] = current_user.outlet_id
+    
+    orders = await db.orders.find(query, {"_id": 0}).sort("updated_at", -1).to_list(500)
+    return orders
+
+@api_router.patch("/orders/{order_id}")
+async def update_order(
+    order_id: str,
+    update_data: Dict[str, Any],
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
+):
+    """Update order details (before ready status)"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Check if order is already ready
+    if order.get('is_ready'):
+        raise HTTPException(status_code=400, detail="Cannot edit order after it's marked as ready")
+    
+    # Track modification
+    update_fields = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "modification_count": order.get('modification_count', 0) + 1
+    }
+    
+    # Allow specific fields to be updated
+    allowed_fields = ['flavour', 'size_pounds', 'base_size', 'cake_image_url', 'delivery_date', 'delivery_time',
+                     'name_on_cake', 'special_instructions', 'total_amount', 'secondary_images', 'customer_info', 'occasion']
+    
+    for field in allowed_fields:
+        if field in update_data:
+            update_fields[field] = update_data[field]
+    
+    # Recalculate pending_amount when total_amount changes
+    if 'total_amount' in update_data:
+        new_total = float(update_data['total_amount'])
+        paid_amount = order.get('paid_amount', 0)
+        update_fields['pending_amount'] = new_total - paid_amount
+        logger.info(f"Order {order_id}: total changed to {new_total}, paid={paid_amount}, pending={new_total - paid_amount}")
+    
+    await db.orders.update_one({"id": order_id}, {"$set": update_fields})
+    
+    # Log the update
+    log = Log(
+        order_id=order_id,
+        action="order_updated",
+        performed_by=current_user.id,
+        before_data={"fields": list(update_data.keys())},
+        after_data=update_data
+    )
+    log_doc = log.model_dump()
+    log_doc['timestamp'] = log_doc['timestamp'].isoformat()
+    await db.logs.insert_one(log_doc)
+
+    # Activity log (audit trail)
+    try:
+        changed_fields = list(update_data.keys())
+        before_snapshot = {k: order.get(k) for k in changed_fields if k in order}
+        await create_activity_log(
+            user=current_user,
+            action_type="order_updated",
+            description=f"Updated order {order.get('order_number', order_id)} ({', '.join(changed_fields)})",
+            entity_type="order",
+            entity_id=order_id,
+            order_number=order.get('order_number'),
+            outlet_id=order.get('outlet_id'),
+            before_data=before_snapshot,
+            after_data=update_data
+        )
+    except Exception as _e:
+        logger.error(f"activity_log failed (order_update): {_e}")
+
+    return {"message": "Order updated successfully"}
+
+
+@api_router.get("/orders/download-pdf")
+async def download_orders_pdf(
+    date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.FACTORY_MANAGER, UserRole.KITCHEN]))
+):
+    """Download orders as PDF for specified date range"""
+    try:
+        # Build query
+        query = {"is_deleted": False, "lifecycle_status": "active"}
+        
+        # Date filtering
+        if date:
+            # Single date (today/tomorrow/custom)
+            target_date = datetime.fromisoformat(date).date()
+            query["delivery_date"] = target_date.isoformat()
+        elif date_from and date_to:
+            # Date range
+            query["delivery_date"] = {
+                "$gte": datetime.fromisoformat(date_from).date().isoformat(),
+                "$lte": datetime.fromisoformat(date_to).date().isoformat()
+            }
+        
+        # Outlet filtering
+        if current_user.role == UserRole.SUPER_ADMIN or current_user.role == UserRole.FACTORY_MANAGER:
+            if outlet_id:
+                query["outlet_id"] = outlet_id
+        else:
+            if current_user.outlet_id:
+                query["outlet_id"] = current_user.outlet_id
+        
+        # Fetch orders sorted by delivery time
+        orders = await db.orders.find(query, {"_id": 0}).sort("delivery_time", 1).to_list(1000)
+        
+        if not orders:
+            raise HTTPException(status_code=404, detail="No orders found for the specified criteria")
+        
+        # Generate PDF
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
+        
+        # Container for PDF elements
+        elements = []
+        styles = getSampleStyleSheet()
+        
+        # Title
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            textColor=colors.HexColor('#e92587'),
+            spaceAfter=30,
+            alignment=1  # Center
+        )
+        
+        date_str = date if date else f"{date_from} to {date_to}" if date_from else "All Orders"
+        title = Paragraph(f"<b>US Bakers - Orders Report</b><br/><font size=12>{date_str}</font>", title_style)
+        elements.append(title)
+        elements.append(Spacer(1, 20))
+        
+        # Orders table
+        table_data = [['Order #', 'Customer', 'Cake Details', 'Delivery', 'Amount']]
+        
+        for order in orders:
+            order_number = order.get('order_number', 'N/A')
+            customer_name = order.get('customer_info', {}).get('name', 'N/A')
+            customer_phone = order.get('customer_info', {}).get('phone', 'N/A')
+            
+            flavour = order.get('flavour', 'N/A')
+            size = order.get('size_pounds', 0)
+            occasion = order.get('occasion', 'N/A')
+            cake_details = f"{flavour}<br/>{size} lbs<br/>{occasion}"
+            
+            delivery_date = order.get('delivery_date', 'N/A')
+            delivery_time = order.get('delivery_time', 'N/A')
+            delivery_info = f"{delivery_date}<br/>{delivery_time}"
+            
+            amount = f"₹{order.get('total_amount', 0):.2f}"
+            
+            table_data.append([
+                Paragraph(order_number, styles['Normal']),
+                Paragraph(f"<b>{customer_name}</b><br/>{customer_phone}", styles['Normal']),
+                Paragraph(cake_details, styles['Normal']),
+                Paragraph(delivery_info, styles['Normal']),
+                Paragraph(amount, styles['Normal'])
+            ])
+        
+        # Create table
+        table = Table(table_data, colWidths=[80, 120, 120, 100, 80])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e92587')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+        ]))
+        
+        elements.append(table)
+        elements.append(Spacer(1, 20))
+        
+        # Summary
+        total_amount = sum(order.get('total_amount', 0) for order in orders)
+        summary_text = f"<b>Total Orders:</b> {len(orders)} | <b>Total Amount:</b> ₹{total_amount:.2f}"
+        summary = Paragraph(summary_text, styles['Normal'])
+        elements.append(summary)
+        
+        # Build PDF
+        doc.build(elements)
+        
+        # Prepare response
+        buffer.seek(0)
+        filename = f"orders_{date if date else 'range'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        
+        # Save to temp file for FileResponse
+        temp_path = f"/tmp/{filename}"
+        with open(temp_path, 'wb') as f:
+            f.write(buffer.getvalue())
+        
+        return FileResponse(
+            path=temp_path,
+            media_type='application/pdf',
+            filename=filename,
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    
+    except Exception as e:
+        logger.error(f"PDF generation failed: {str(e)}")
+
+@api_router.post("/orders/{order_id}/mark-ready")
+async def mark_order_ready(
+    order_id: str,
+    transfer_to_outlet_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.KITCHEN, UserRole.FACTORY_MANAGER]))
+):
+    """Mark order as ready and transfer to specified branch (Kitchen/Factory Manager only)"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if order.get('is_ready'):
+        raise HTTPException(status_code=400, detail="Order is already marked as ready")
+    
+    # Update order
+    update_data = {
+        "is_ready": True,
+        "ready_at": datetime.now(timezone.utc).isoformat(),
+        "status": "ready",
+        "transfer_to_outlet_id": transfer_to_outlet_id,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.orders.update_one({"id": order_id}, {"$set": update_data})
+    
+    # Log action
+    log = Log(
+        order_id=order_id,
+        action="order_marked_ready",
+        performed_by=current_user.id,
+        after_data={"transfer_to_outlet_id": transfer_to_outlet_id}
+    )
+    log_doc = log.model_dump()
+    log_doc['timestamp'] = log_doc['timestamp'].isoformat()
+    await db.logs.insert_one(log_doc)
+    
+    return {
+        "message": "Order marked as ready successfully",
+        "transfer_to_outlet_id": transfer_to_outlet_id,
+        "ready_at": update_data["ready_at"]
+    }
+
+
+@api_router.post("/orders/{order_id}/upload-actual-photo")
+async def upload_actual_cake_photo(
+    order_id: str,
+    image_url: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.KITCHEN, UserRole.FACTORY_MANAGER]))
+):
+    """Upload actual cake photo after marking ready - Triggers incentive calculation"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if not order.get('is_ready'):
+        raise HTTPException(status_code=400, detail="Order must be marked as ready before uploading photo")
+    
+    if order.get('actual_cake_image_url'):
+        raise HTTPException(status_code=400, detail="Actual cake photo already uploaded")
+    
+    # Update order with actual image
+    update_data = {
+        "actual_cake_image_url": image_url,
+        "photo_uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "photo_uploaded_by": current_user.id,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.orders.update_one({"id": order_id}, {"$set": update_data})
+    
+    # Trigger incentive calculation
+    try:
+        await calculate_incentive_for_order(order_id, order)
+    except Exception as e:
+        logger.error(f"Failed to calculate incentive for order {order_id}: {str(e)}")
+    
+    # Log action
+    log = Log(
+        order_id=order_id,
+        action="actual_photo_uploaded",
+        performed_by=current_user.id,
+        after_data={"image_url": image_url}
+    )
+    log_doc = log.model_dump()
+    log_doc['timestamp'] = log_doc['timestamp'].isoformat()
+    await db.logs.insert_one(log_doc)
+    
+    return {
+        "message": "Photo uploaded successfully. Incentive calculation triggered.",
+        "actual_cake_image_url": image_url
+    }
+
+async def calculate_incentive_for_order(order_id: str, order: dict):
+    """Calculate and update incentive for the sales person"""
+    # Get sales person
+    sales_person_id = order.get('order_taken_by')
+    if not sales_person_id:
+        logger.warning(f"No sales person assigned to order {order_id}")
+        return
+    
+    sales_person = await db.sales_persons.find_one({"id": sales_person_id}, {"_id": 0})
+    if not sales_person:
+        logger.warning(f"Sales person {sales_person_id} not found for order {order_id}")
+        return
+    
+    # Calculate incentive (example: 5% of order amount)
+    order_amount = order.get('total_amount', 0)
+    incentive_percentage = sales_person.get('incentive_percentage', 5.0)
+    incentive_amount = order_amount * (incentive_percentage / 100)
+    
+    # Update sales person's total incentive
+    current_incentive = sales_person.get('total_incentive', 0)
+    new_total = current_incentive + incentive_amount
+    
+    await db.sales_persons.update_one(
+        {"id": sales_person_id},
+        {
+            "$set": {
+                "total_incentive": new_total,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            },
+            "$inc": {"total_orders": 1}
+        }
+    )
+    
+    logger.info(f"Incentive calculated for order {order_id}: ₹{incentive_amount:.2f} for {sales_person.get('name')}")
+
+# ==================== READY TO DELIVER (Counter/Branch Flow) ====================
+
+@api_router.post("/orders/{order_id}/ready-to-deliver")
+async def mark_ready_to_deliver(
+    order_id: str,
+    image_url: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
+):
+    """Counter/Branch marks order as ready to deliver after uploading cake photo.
+    This triggers incentive calculation and makes the order visible to delivery persons."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if order.get('status') != 'ready':
+        raise HTTPException(status_code=400, detail="Order must be marked as 'ready' by kitchen first")
+    
+    update_data = {
+        "status": "ready_to_deliver",
+        "actual_cake_image_url": image_url,
+        "photo_uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "photo_uploaded_by": current_user.id,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    await db.orders.update_one({"id": order_id}, {"$set": update_data})
+    
+    # Trigger incentive calculation
+    try:
+        await calculate_incentive_for_order(order_id, order)
+    except Exception as e:
+        logger.error(f"Failed to calculate incentive for order {order_id}: {str(e)}")
+    
+    return {
+        "message": "Order marked as ready to deliver. Incentive calculated.",
+        "actual_cake_image_url": image_url
+    }
+
+@api_router.get("/delivery/available-orders")
+async def get_available_delivery_orders(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.DELIVERY]))
+):
+    """Get orders that are ready to deliver and not yet accepted by any delivery person"""
+    query = {
+        "status": "ready_to_deliver",
+        "is_deleted": False,
+        "needs_delivery": True,
+        "assigned_delivery_partner": None
+    }
+    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", 1).to_list(100)
+    return orders
+
+@api_router.post("/delivery/accept-order/{order_id}")
+async def accept_delivery_order(
+    order_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.DELIVERY]))
+):
+    """Delivery person accepts an order for delivery"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if order.get('status') != 'ready_to_deliver':
+        raise HTTPException(status_code=400, detail="Order is not ready for delivery")
+    
+    if order.get('assigned_delivery_partner'):
+        raise HTTPException(status_code=400, detail="Order already accepted by another delivery person")
+    
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "assigned_delivery_partner": current_user.id,
+            "status": "picked_up",
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    return {"message": "Order accepted for delivery"}
+
+@api_router.post("/delivery/assign-order/{order_id}")
+async def assign_delivery_order(
+    order_id: str,
+    delivery_person_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
+):
+    """Counter/Manager assigns a delivery person to an order"""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if order.get('status') != 'ready_to_deliver':
+        raise HTTPException(status_code=400, detail="Order is not ready for delivery")
+    
+    # Verify delivery person exists and has delivery role
+    delivery_user = await db.users.find_one({"id": delivery_person_id, "role": "delivery", "is_active": True}, {"_id": 0})
+    if not delivery_user:
+        raise HTTPException(status_code=404, detail="Delivery person not found")
+    
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "assigned_delivery_partner": delivery_person_id,
+            "status": "picked_up",
+            "assigned_by": current_user.id,
+            "assigned_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    return {"message": f"Order assigned to {delivery_user.get('name')}"}
+
+@api_router.get("/delivery/persons")
+async def get_delivery_persons(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
+):
+    """Get list of active delivery persons"""
+    persons = await db.users.find({"role": "delivery", "is_active": True}, {"_id": 0, "password_hash": 0}).to_list(100)
+    return persons
+
+@api_router.get("/delivery/my-orders")
+async def get_my_delivery_orders(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.DELIVERY]))
+):
+    """Get orders assigned to the current delivery person"""
+    query = {
+        "assigned_delivery_partner": current_user.id,
+        "is_deleted": False,
+        "status": {"$in": ["picked_up", "reached", "delivered"]}
+    }
+    orders = await db.orders.find(query, {"_id": 0}).sort("updated_at", -1).to_list(100)
+    return orders
+
+class StatusUpdateRequest(BaseModel):
+    """Request body for status update - supports both body and query param"""
+    status: Optional[str] = None
+    is_ready: Optional[bool] = None
+    transfer_to_outlet_id: Optional[str] = None
+
+@api_router.patch("/orders/{order_id}/status")
+async def update_order_status(
+    order_id: str,
+    status: Optional[OrderStatus] = None,
+    body: Optional[StatusUpdateRequest] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Update order status and send WhatsApp notification.
+    Accepts status from query parameter OR request body for flexibility."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Get status from body if not provided as query param
+    actual_status = status
+    if actual_status is None and body and body.status:
+        try:
+            actual_status = OrderStatus(body.status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {body.status}")
+    
+    if actual_status is None:
+        raise HTTPException(status_code=400, detail="Status is required")
+    
+    update_data = {
+        "status": actual_status.value,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    # If marking as ready
+    if actual_status == OrderStatus.READY:
+        update_data['is_ready'] = True
+        update_data['ready_at'] = datetime.now(timezone.utc).isoformat()
+    
+    # Handle is_ready from body
+    if body and body.is_ready is not None:
+        update_data['is_ready'] = body.is_ready
+        if body.is_ready:
+            update_data['ready_at'] = datetime.now(timezone.utc).isoformat()
+    
+    # Handle transfer_to_outlet_id from body
+    if body and body.transfer_to_outlet_id:
+        update_data['transfer_to_outlet_id'] = body.transfer_to_outlet_id
+    
+    await db.orders.update_one({"id": order_id}, {"$set": update_data})
+    
+    # Log status change
+    log = Log(
+        order_id=order_id,
+        action="status_changed",
+        performed_by=current_user.id,
+        before_data={"status": order.get('status')},
+        after_data={"status": actual_status.value}
+    )
+    log_doc = log.model_dump()
+    log_doc['timestamp'] = log_doc['timestamp'].isoformat()
+    await db.logs.insert_one(log_doc)
+    
+    # Send WhatsApp notification based on status
+    try:
+        event_map = {
+            OrderStatus.CONFIRMED: WhatsAppTemplateEvent.ORDER_CONFIRMED,
+            OrderStatus.READY: WhatsAppTemplateEvent.ORDER_READY,
+            OrderStatus.PICKED_UP: WhatsAppTemplateEvent.OUT_FOR_DELIVERY,
+            OrderStatus.DELIVERED: WhatsAppTemplateEvent.DELIVERED
+        }
+        
+        if actual_status in event_map:
+            # Send via MSG91 only
+            await send_whatsapp_notification(order_id, event_map[actual_status])
+    except Exception as e:
+        logger.error(f"WhatsApp notification failed for order {order_id}: {str(e)}")
+    
+    return {"message": f"Order status updated to {actual_status.value}"}
+
+@api_router.post("/orders/{order_id}/transfer")
+async def transfer_order(
+    order_id: str,
+    new_outlet_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN]))
+):
+    """Transfer order to another outlet with all payment data"""
+    # Check if user has permission
+    if not any(perm in current_user.permissions for perm in ['all', 'can_edit_order', 'can_manage_outlets']):
+        raise HTTPException(status_code=403, detail="Not authorized to transfer orders")
+    
+    # Find order
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Check if new outlet exists
+    new_outlet = await db.outlets.find_one({"id": new_outlet_id}, {"_id": 0})
+    if not new_outlet:
+        raise HTTPException(status_code=404, detail="Target outlet not found")
+    
+    # Update order outlet
+    old_outlet_id = order.get('outlet_id')
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "outlet_id": new_outlet_id,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    # Log transfer
+    log = Log(
+        order_id=order_id,
+        action="order_transferred",
+        performed_by=current_user.id,
+        before_data={"outlet_id": old_outlet_id},
+        after_data={"outlet_id": new_outlet_id}
+    )
+    log_doc = log.model_dump()
+    log_doc['timestamp'] = log_doc['timestamp'].isoformat()
+    await db.logs.insert_one(log_doc)
+    
+    return {
+        "message": f"Order transferred to {new_outlet['name']}",
+        "old_outlet_id": old_outlet_id,
+        "new_outlet_id": new_outlet_id
+    }
+
+@api_router.post("/orders/{order_id}/cancel-delivery")
+async def cancel_delivery(
+    order_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Cancel delivery for an order and remove delivery charges"""
+    # Find order
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    if not order.get('needs_delivery'):
+        raise HTTPException(status_code=400, detail="Order doesn't have delivery")
+    
+    # Calculate delivery charge to remove
+    delivery_charge = 0
+    if order.get('zone_id'):
+        zone = await db.zones.find_one({"id": order['zone_id']}, {"_id": 0})
+        if zone:
+            delivery_charge = zone.get('delivery_charge', 0)
+    
+    # Update order
+    new_total = order.get('total_amount', 0) - delivery_charge
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "needs_delivery": False,
+            "zone_id": "",
+            "delivery_address": "",
+            "total_amount": new_total,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    # Log cancellation
+    log = Log(
+        order_id=order_id,
+        action="delivery_cancelled",
+        performed_by=current_user.id,
+        before_data={"needs_delivery": True, "total_amount": order.get('total_amount')},
+        after_data={"needs_delivery": False, "total_amount": new_total}
+    )
+    log_doc = log.model_dump()
+    log_doc['timestamp'] = log_doc['timestamp'].isoformat()
+    await db.logs.insert_one(log_doc)
+    
+    return {
+        "message": "Delivery cancelled successfully",
+        "delivery_charge_removed": delivery_charge,
+        "new_total": new_total
+    }
+
+# ==================== FACTORY/KITCHEN ENDPOINTS ====================
+
+@api_router.get("/kitchen/orders")
+async def get_kitchen_orders(
+    date: Optional[str] = None,
+    outlet_id: Optional[str] = None,
+    status: Optional[str] = None,
+    size: Optional[str] = None,
+    flavour: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get orders for factory/kitchen with advanced filters"""
+    query = {}
+    
+    # Default: Show confirmed, in_progress, and ready orders
+    if not status:
+        query['status'] = {"$in": [OrderStatus.CONFIRMED.value, OrderStatus.IN_PROGRESS.value, OrderStatus.READY.value, OrderStatus.READY_TO_DELIVER.value]}
+    else:
+        query['status'] = status
+    
+    # Date filter (default: today)
+    if not date:
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        query['delivery_date'] = today
+    else:
+        query['delivery_date'] = date
+    
+    # Outlet filter
+    if outlet_id:
+        query['outlet_id'] = outlet_id
+    
+    # Additional filters
+    if size:
+        query['size_pounds'] = float(size)
+    if flavour:
+        query['flavour'] = flavour
+    
+    # Exclude deleted and on-hold orders
+    query['is_deleted'] = False
+    query['is_hold'] = False
+    
+    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_time", 1).to_list(1000)
+    orders = await enrich_orders_with_names(orders)
+    orders = await enrich_orders_with_kitchen_deadline(orders)
+    
+    return orders
+
+async def enrich_orders_with_kitchen_deadline(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Compute kitchen_ready_deadline = delivery_time - outlet.ready_time_buffer_minutes"""
+    if not orders:
+        return orders
+    outlet_ids = list({o.get('outlet_id') for o in orders if o.get('outlet_id')})
+    outlet_docs = await db.outlets.find({"id": {"$in": outlet_ids}}, {"_id": 0, "id": 1, "ready_time_buffer_minutes": 1}).to_list(500)
+    buffer_map = {d['id']: int(d.get('ready_time_buffer_minutes') or 30) for d in outlet_docs}
+    for o in orders:
+        buf = buffer_map.get(o.get('outlet_id'), 30)
+        d_date = o.get('delivery_date')
+        d_time = o.get('delivery_time')
+        deadline = None
+        if d_date and d_time:
+            try:
+                # Normalize time string: handle time-slot ranges like "10:00 AM - 12:00 PM" by using start time
+                d_time_norm = str(d_time).strip()
+                if ' - ' in d_time_norm:
+                    d_time_norm = d_time_norm.split(' - ')[0].strip()
+                # Try multiple formats: 24h, 12h with AM/PM, with seconds
+                dt = None
+                for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %I:%M %p", "%Y-%m-%d %I:%M%p"):
+                    try:
+                        dt = datetime.strptime(f"{d_date} {d_time_norm}", fmt)
+                        break
+                    except ValueError:
+                        continue
+                if dt is not None:
+                    deadline_dt = dt - timedelta(minutes=buf)
+                    deadline = deadline_dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                deadline = None
+        o['kitchen_ready_deadline'] = deadline
+        o['ready_time_buffer_minutes'] = buf
+    return orders
+
+@api_router.post("/kitchen/orders/mark-ready")
+async def mark_orders_ready(
+    order_ids: List[str],
+    current_user: User = Depends(get_current_user)
+):
+    """Mark multiple orders as ready (bulk operation)"""
+    if not order_ids:
+        raise HTTPException(status_code=400, detail="No order IDs provided")
+    
+    updated_count = 0
+    for order_id in order_ids:
+        result = await db.orders.update_one(
+            {"id": order_id, "status": OrderStatus.CONFIRMED.value},
+            {"$set": {
+                "status": OrderStatus.READY.value,
+                "is_ready": True,
+                "ready_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        
+        if result.modified_count > 0:
+            updated_count += 1
+            
+            # Send WhatsApp notification
+            try:
+                await send_whatsapp_notification(order_id, WhatsAppTemplateEvent.ORDER_READY)
+            except Exception as e:
+                logger.error(f"WhatsApp notification failed: {str(e)}")
+    
+    return {
+        "message": f"{updated_count} orders marked as ready",
+        "total_requested": len(order_ids),
+        "updated": updated_count
+    }
+
+@api_router.get("/kitchen/orders/summary")
+async def get_kitchen_summary(
+    date: Optional[str] = None,
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get summary of orders for kitchen dashboard"""
+    query = {"is_deleted": False, "is_hold": False}
+    
+    # Date filter (default: today)
+    if not date:
+        today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        query['delivery_date'] = today
+    else:
+        query['delivery_date'] = date
+    
+    # Outlet filter
+    if outlet_id:
+        query['outlet_id'] = outlet_id
+    
+    all_orders = await db.orders.find(query, {"_id": 0}).to_list(1000)
+    
+    confirmed_count = sum(1 for o in all_orders if o.get('status') == OrderStatus.CONFIRMED.value)
+    ready_count = sum(1 for o in all_orders if o.get('status') == OrderStatus.READY.value)
+    picked_up_count = sum(1 for o in all_orders if o.get('status') == OrderStatus.PICKED_UP.value)
+    delivered_count = sum(1 for o in all_orders if o.get('status') == OrderStatus.DELIVERED.value)
+    
+    return {
+        "total_orders": len(all_orders),
+        "confirmed": confirmed_count,
+        "ready": ready_count,
+        "picked_up": picked_up_count,
+        "delivered": delivered_count,
+        "pending_production": confirmed_count  # Orders needing to be made
+    }
+
+
+@api_router.get("/factory/production-sheet")
+async def get_production_sheet(
+    date: Optional[str] = None,
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.FACTORY_MANAGER, UserRole.KITCHEN]))
+):
+    """Production sheet grouped by base size + flavour for kitchen planning."""
+    query = {"is_deleted": False, "is_hold": False}
+    if date:
+        query['delivery_date'] = date
+    else:
+        query['delivery_date'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    if outlet_id:
+        query['outlet_id'] = outlet_id
+    query['status'] = {"$in": [OrderStatus.CONFIRMED.value, OrderStatus.IN_PROGRESS.value, OrderStatus.READY.value]}
+
+    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_time", 1).to_list(2000)
+    orders = await enrich_orders_with_kitchen_deadline(orders)
+
+    groups: Dict[str, Dict[str, Any]] = {}
+    for o in orders:
+        base = o.get('base_size') if o.get('base_size') is not None else o.get('size_pounds')
+        flav = o.get('flavour') or 'Unknown'
+        key = f"{base}|{flav}"
+        if key not in groups:
+            groups[key] = {
+                "base_size": base,
+                "flavour": flav,
+                "count": 0,
+                "total_pounds": 0.0,
+                "orders": [],
+            }
+        groups[key]["count"] += 1
+        groups[key]["total_pounds"] += float(o.get('size_pounds') or 0)
+        groups[key]["orders"].append({
+            "order_number": o.get('order_number'),
+            "size_pounds": o.get('size_pounds'),
+            "delivery_time": o.get('delivery_time'),
+            "kitchen_ready_deadline": o.get('kitchen_ready_deadline'),
+            "name_on_cake": o.get('name_on_cake'),
+            "customer_name": (o.get('customer_info') or {}).get('name'),
+        })
+    grouped = sorted(groups.values(), key=lambda g: (g["base_size"] or 0, g["flavour"]))
+    return {
+        "date": query['delivery_date'],
+        "total_orders": len(orders),
+        "groups": grouped,
+    }
+
+
+@api_router.get("/orders/time-slot-capacity")
+async def time_slot_capacity(
+    outlet_id: str,
+    delivery_date: str,
+    delivery_time: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Return current order count for the given outlet/date/time slot, plus the configured limit."""
+    settings = await db.system_settings.find_one({"id": "system_settings"}, {"_id": 0}) or {}
+    limit = int(settings.get('max_orders_per_time_slot') or 0)
+    count = await db.orders.count_documents({
+        "outlet_id": outlet_id,
+        "delivery_date": delivery_date,
+        "delivery_time": delivery_time,
+        "is_deleted": False,
+    })
+    return {"count": count, "limit": limit, "exceeded": bool(limit and count >= limit)}
+
+
+@api_router.post("/customers/import")
+async def import_customers(
+    payload: Dict[str, Any],
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN]))
+):
+    """Bulk import customers from Excel. Stores them in 'customer_directory' collection."""
+    rows = payload.get('rows') or []
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=400, detail="rows must be an array")
+    inserted = 0
+    updated = 0
+    errors: List[str] = []
+    for r in rows:
+        phone = (str(r.get('phone') or r.get('Phone') or '')).strip()
+        name = (str(r.get('name') or r.get('Name') or '')).strip()
+        if not phone or not name:
+            errors.append(f"Skipping row missing name/phone: {r}")
+            continue
+        doc = {
+            "name": name,
+            "phone": phone,
+            "email": r.get('email') or r.get('Email'),
+            "birthday": r.get('birthday') or r.get('Birthday'),
+            "gender": r.get('gender') or r.get('Gender'),
+            "address": r.get('address') or r.get('Address'),
+            "outlet_id": r.get('outlet_id') or r.get('Outlet') or current_user.outlet_id,
+            "imported_by": current_user.id,
+            "imported_at": datetime.now(timezone.utc).isoformat(),
+        }
+        existing = await db.customer_directory.find_one({"phone": phone}, {"_id": 0})
+        if existing:
+            await db.customer_directory.update_one({"phone": phone}, {"$set": doc})
+            updated += 1
+        else:
+            doc["id"] = str(uuid.uuid4())
+            await db.customer_directory.insert_one(doc)
+            inserted += 1
+    return {"inserted": inserted, "updated": updated, "errors": errors}
+
+
+@api_router.get("/factory/orders")
+async def get_factory_orders(
+    date: Optional[str] = None,
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.FACTORY_MANAGER]))
+):
+    """Get ALL orders across all outlets for factory view"""
+    query = {"is_deleted": False}
+    
+    if date:
+        query['delivery_date'] = date
+    
+    if outlet_id:
+        query['outlet_id'] = outlet_id
+    
+    # Factory sees all statuses except deleted
+    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", -1).to_list(2000)
+    
+    # Get outlet names
+    outlets = await db.outlets.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
+    outlet_map = {o['id']: o['name'] for o in outlets}
+    
+    for order in orders:
+        order['outlet_name'] = outlet_map.get(order.get('outlet_id'), 'Unknown')
+    
+    return orders
+
+@api_router.get("/factory/orders/pdf")
+async def export_factory_orders_pdf(
+    date: Optional[str] = None,
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.FACTORY_MANAGER]))
+):
+    """Generate PDF of orders for factory with all details and cake images"""
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import mm
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        import httpx
+        
+        query = {"is_deleted": False}
+        if date:
+            query['delivery_date'] = date
+        else:
+            query['delivery_date'] = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        if outlet_id:
+            query['outlet_id'] = outlet_id
+        
+        orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", 1).to_list(2000)
+        
+        outlets_list = await db.outlets.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
+        outlet_map = {o['id']: o['name'] for o in outlets_list}
+        
+        report_date = date or datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        pdf_path = f"/tmp/factory_orders_{report_date}.pdf"
+        doc = SimpleDocTemplate(pdf_path, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
+        styles = getSampleStyleSheet()
+        
+        title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=16, textColor=colors.HexColor('#e92587'), spaceAfter=5)
+        subtitle_style = ParagraphStyle('Subtitle', parent=styles['Normal'], fontSize=10, textColor=colors.grey)
+        cell_style = ParagraphStyle('Cell', parent=styles['Normal'], fontSize=8, leading=10)
+        bold_cell = ParagraphStyle('BoldCell', parent=styles['Normal'], fontSize=8, leading=10, fontName='Helvetica-Bold')
+        
+        elements = []
+        
+        elements.append(Paragraph("US BAKERS - Factory Order Report", title_style))
+        elements.append(Paragraph(f"Date: {report_date} | Total Orders: {len(orders)}", subtitle_style))
+        elements.append(Spacer(1, 10))
+        
+        if not orders:
+            elements.append(Paragraph("No orders found for this date.", styles['Normal']))
+        else:
+            header = ['#', 'Order', 'Outlet', 'Customer', 'Flavour', 'Size', 'Name on Cake', 'Delivery', 'Status', 'Amount']
+            table_data = [header]
+            
+            for i, order in enumerate(orders, 1):
+                cust = order.get('customer_info') or {}
+                delivery = 'Yes' if order.get('needs_delivery') else 'No'
+                status_text = (order.get('status') or 'pending').replace('_', ' ').title()
+                row = [
+                    str(i),
+                    Paragraph(str(order.get('order_number') or ''), cell_style),
+                    Paragraph(str(outlet_map.get(order.get('outlet_id'), 'N/A')), cell_style),
+                    Paragraph(f"{cust.get('name') or 'N/A'}\n{cust.get('phone') or ''}", cell_style),
+                    Paragraph(str(order.get('flavour') or 'N/A'), cell_style),
+                    f"{order.get('size_pounds') or ''} lbs",
+                    Paragraph(str(order.get('name_on_cake') or 'N/A'), cell_style),
+                    delivery,
+                    Paragraph(status_text, bold_cell),
+                    f"Rs.{order.get('total_amount') or 0:.0f}"
+                ]
+                table_data.append(row)
+            
+            col_widths = [15*mm, 20*mm, 25*mm, 35*mm, 22*mm, 15*mm, 25*mm, 15*mm, 22*mm, 20*mm]
+            table = Table(table_data, colWidths=col_widths, repeatRows=1)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e92587')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 8),
+                ('FONTSIZE', (0, 1), (-1, -1), 7),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#fff5f9')]),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ]))
+            elements.append(table)
+            
+            elements.append(Spacer(1, 15))
+            elements.append(Paragraph("Order Details with Cake Images", ParagraphStyle('DetailTitle', parent=styles['Heading2'], fontSize=13, textColor=colors.HexColor('#e92587'))))
+            elements.append(Spacer(1, 8))
+            
+            for order in orders:
+                cust = order.get('customer_info') or {}
+                elements.append(Paragraph(f"<b>Order #{order.get('order_number') or ''} - {order.get('flavour') or 'N/A'} ({order.get('size_pounds') or ''} lbs)</b>", styles['Heading4']))
+                
+                detail_data = [
+                    ['Customer:', f"{cust.get('name') or 'N/A'} | {cust.get('phone') or 'N/A'}"],
+                    ['Outlet:', str(outlet_map.get(order.get('outlet_id'), 'N/A'))],
+                    ['Occasion:', str(order.get('occasion') or 'N/A')],
+                    ['Name on Cake:', str(order.get('name_on_cake') or 'N/A')],
+                    ['Delivery:', f"{'Yes' if order.get('needs_delivery') else 'No'} | {order.get('delivery_date') or ''} {order.get('delivery_time') or ''}"],
+                    ['Status:', (order.get('status') or 'pending').replace('_', ' ').title()],
+                    ['Amount:', f"Rs.{order.get('total_amount') or 0:.2f} (Paid: Rs.{order.get('paid_amount') or 0:.2f})"],
+                ]
+                if order.get('delivery_address'):
+                    detail_data.append(['Address:', order.get('delivery_address', '')])
+                if order.get('special_instructions'):
+                    detail_data.append(['Instructions:', order.get('special_instructions', '')])
+                
+                detail_table = Table(detail_data, colWidths=[30*mm, 140*mm])
+                detail_table.setStyle(TableStyle([
+                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 8),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('TOPPADDING', (0, 0), (-1, -1), 1),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 1),
+                ]))
+                elements.append(detail_table)
+                
+                cake_url = order.get('cake_image_url', '')
+                if cake_url and cake_url.startswith('http'):
+                    try:
+                        async with httpx.AsyncClient(follow_redirects=True) as http_client:
+                            img_resp = await http_client.get(cake_url, timeout=5.0)
+                            if img_resp.status_code == 200 and 'image' in (img_resp.headers.get('content-type', '')):
+                                img_path = f"/tmp/cake_{order.get('id', 'x')[:8]}.jpg"
+                                with open(img_path, 'wb') as imgf:
+                                    imgf.write(img_resp.content)
+                                from PIL import Image as PILImage
+                                try:
+                                    pil_img = PILImage.open(img_path)
+                                    pil_img.verify()
+                                    elements.append(Spacer(1, 3))
+                                    elements.append(RLImage(img_path, width=50*mm, height=50*mm))
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                elif cake_url and cake_url.startswith('/api/uploads/'):
+                    local_path = str(ROOT_DIR / cake_url.replace('/api/uploads/', 'uploads/'))
+                    if os.path.exists(local_path):
+                        from PIL import Image as PILImage
+                        try:
+                            pil_img = PILImage.open(local_path)
+                            pil_img.verify()
+                            elements.append(Spacer(1, 3))
+                            elements.append(RLImage(local_path, width=50*mm, height=50*mm))
+                        except Exception:
+                            pass
+                
+                elements.append(Spacer(1, 8))
+        
+        doc.build(elements)
+        
+        return FileResponse(
+            pdf_path,
+            media_type='application/pdf',
+            filename=f"factory_orders_{report_date}.pdf"
+        )
+    except Exception as e:
+        logger.error(f"PDF generation failed: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
+
+# ==================== REPORTS ENDPOINTS ====================
+
+@api_router.get("/reports/orders")
+async def get_order_report(
+    start_date: str,
+    end_date: str,
+    outlet_id: Optional[str] = None,
+    status: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get order report for a date range"""
+    query = {
+        "delivery_date": {"$gte": start_date, "$lte": end_date},
+        "is_deleted": False
+    }
+    
+    # Outlet filter (outlet users can only see their own)
+    if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+        query['outlet_id'] = current_user.outlet_id
+    elif outlet_id:
+        query['outlet_id'] = outlet_id
+    
+    if status:
+        query['status'] = status
+    
+    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", -1).to_list(5000)
+    
+    # Calculate summary
+    total_orders = len(orders)
+    total_amount = sum(o.get('total_amount', 0) for o in orders)
+    total_paid = sum(o.get('paid_amount', 0) for o in orders)
+    total_pending = sum(o.get('pending_amount', 0) for o in orders)
+    
+    status_breakdown = {}
+    for order in orders:
+        status_val = order.get('status', 'unknown')
+        status_breakdown[status_val] = status_breakdown.get(status_val, 0) + 1
+    
+    return {
+        "orders": orders,
+        "summary": {
+            "total_orders": total_orders,
+            "total_amount": total_amount,
+            "total_paid": total_paid,
+            "total_pending": total_pending,
+            "status_breakdown": status_breakdown
+        }
+    }
+
+@api_router.get("/reports/payments")
+async def get_payment_report(
+    start_date: str,
+    end_date: str,
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get payment collection report"""
+    try:
+        # Parse dates - handle both date and datetime formats
+        if 'T' in start_date:
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        else:
+            start_dt = datetime.fromisoformat(f"{start_date}T00:00:00+00:00")
+        
+        if 'T' in end_date:
+            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        else:
+            end_dt = datetime.fromisoformat(f"{end_date}T23:59:59+00:00")
+        
+        query = {}
+        
+        # Outlet filter
+        if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+            # Get orders for this outlet only
+            orders = await db.orders.find({"outlet_id": current_user.outlet_id}, {"_id": 0, "id": 1}).to_list(10000)
+            order_ids = [o["id"] for o in orders]
+            query['order_id'] = {"$in": order_ids}
+        elif outlet_id:
+            # Get orders for specified outlet
+            orders = await db.orders.find({"outlet_id": outlet_id}, {"_id": 0, "id": 1}).to_list(10000)
+            order_ids = [o["id"] for o in orders]
+            query['order_id'] = {"$in": order_ids}
+        
+        # Get all payments
+        payments = await db.payments.find(query, {"_id": 0}).to_list(10000)
+        
+        # Filter by date - handle both string and datetime formats
+        filtered_payments = []
+        for p in payments:
+            paid_at = p.get('paid_at')
+            if isinstance(paid_at, str):
+                paid_dt = datetime.fromisoformat(paid_at.replace('Z', '+00:00'))
+            else:
+                paid_dt = paid_at
+            
+            if start_dt <= paid_dt <= end_dt:
+                # Convert to ISO string for JSON response
+                p['paid_at'] = paid_dt.isoformat() if not isinstance(paid_at, str) else paid_at
+                filtered_payments.append(p)
+        
+        # Calculate totals by payment method
+        method_totals = {}
+        for payment in filtered_payments:
+            method = payment.get('payment_method', 'unknown')
+            amount = payment.get('amount', 0)
+            method_totals[method] = method_totals.get(method, 0) + amount
+        
+        total_collected = sum(p.get('amount', 0) for p in filtered_payments)
+        
+        return {
+            "payments": filtered_payments,
+            "summary": {
+                "total_payments": len(filtered_payments),
+                "total_collected": round(total_collected, 2),
+                "by_method": {k: round(v, 2) for k, v in method_totals.items()}
+            }
+        }
+    except Exception as e:
+        logger.error(f"Payment report error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate payment report: {str(e)}")
+
+@api_router.get("/reports/delivery")
+async def get_delivery_report(
+    start_date: str,
+    end_date: str,
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get delivery performance report"""
+    query = {
+        "delivery_date": {"$gte": start_date, "$lte": end_date},
+        "needs_delivery": True,
+        "is_deleted": False
+    }
+    
+    # Outlet filter
+    if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+        query['outlet_id'] = current_user.outlet_id
+    elif outlet_id:
+        query['outlet_id'] = outlet_id
+    
+    orders = await db.orders.find(query, {"_id": 0}).to_list(5000)
+    
+    delivered = sum(1 for o in orders if o.get('status') == OrderStatus.DELIVERED.value)
+    cancelled = sum(1 for o in orders if o.get('status') == OrderStatus.CANCELLED.value)
+    in_transit = sum(1 for o in orders if o.get('status') in [OrderStatus.PICKED_UP.value, OrderStatus.REACHED.value])
+    pending = sum(1 for o in orders if o.get('status') in [OrderStatus.CONFIRMED.value, OrderStatus.READY.value])
+    
+    return {
+        "summary": {
+            "total_delivery_orders": len(orders),
+            "delivered": delivered,
+            "cancelled": cancelled,
+            "in_transit": in_transit,
+            "pending_delivery": pending,
+            "delivery_rate": round((delivered / len(orders) * 100) if orders else 0, 2)
+        },
+        "orders": orders
+    }
+
+# ==================== DELIVERY ENDPOINTS ====================
+
+@api_router.get("/delivery/orders")
+async def get_delivery_orders(
+    current_user: User = Depends(get_current_user)
+):
+    """Get all orders assigned for delivery"""
+    query = {
+        "needs_delivery": True,
+        "is_deleted": False,
+        "status": {"$in": [OrderStatus.READY.value, OrderStatus.PICKED_UP.value, OrderStatus.REACHED.value]}
+    }
+    
+    # If user is delivery staff, show only their outlet
+    if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+        query['outlet_id'] = current_user.outlet_id
+    
+    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", 1).to_list(1000)
+    
+    return orders
+
+@api_router.get("/delivery/summary")
+async def get_delivery_summary(
+    current_user: User = Depends(get_current_user)
+):
+    """Get delivery dashboard summary"""
+    query = {"needs_delivery": True, "is_deleted": False}
+    
+    if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+        query['outlet_id'] = current_user.outlet_id
+    
+    all_orders = await db.orders.find(query, {"_id": 0}).to_list(1000)
+    
+    ready = sum(1 for o in all_orders if o.get('status') in [OrderStatus.READY.value, 'ready_to_deliver'])
+    picked_up = sum(1 for o in all_orders if o.get('status') == OrderStatus.PICKED_UP.value)
+    reached = sum(1 for o in all_orders if o.get('status') == OrderStatus.REACHED.value)
+    
+    # Delivered today
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    delivered_today = sum(1 for o in all_orders if o.get('status') == OrderStatus.DELIVERED.value and o.get('delivery_date') == today)
+    
+    return {
+        "ready": ready,
+        "picked_up": picked_up,
+        "reached": reached,
+        "delivered_today": delivered_today,
+        "total_active": ready + picked_up + reached
+    }
+
+@api_router.post("/delivery/verify-otp")
+async def verify_delivery_otp(
+    verification_data: Dict[str, str],
+    current_user: User = Depends(get_current_user)
+):
+    """Verify OTP and mark order as delivered"""
+    order_id = verification_data.get('order_id')
+    otp = verification_data.get('otp')
+    
+    if not order_id or not otp:
+        raise HTTPException(status_code=400, detail="Order ID and OTP required")
+    
+    # Get order
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Verify OTP
+    if order.get('delivery_otp') != otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    
+    # Update order to delivered
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "status": OrderStatus.DELIVERED.value,
+            "delivered_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    
+    # Send WhatsApp notification
+    try:
+        await send_whatsapp_notification(order_id, WhatsAppTemplateEvent.DELIVERED)
+    except Exception as e:
+        logger.error(f"WhatsApp notification failed: {str(e)}")
+    
+    # Log delivery
+    log = Log(
+        order_id=order_id,
+        action="order_delivered",
+        performed_by=current_user.id,
+        after_data={"delivered_at": datetime.now(timezone.utc).isoformat(), "otp_verified": True}
+    )
+    log_doc = log.model_dump()
+    log_doc['timestamp'] = log_doc['timestamp'].isoformat()
+    await db.logs.insert_one(log_doc)
+    
+    return {"message": "Order delivered successfully", "order_id": order_id}
+
+# ==================== PETPOOJA WEBHOOK ====================
+
+@api_router.post("/petpooja/callback")
+async def petpooja_callback(request_data: Dict[str, Any]):
+    """
+    Webhook endpoint for PetPooja POS to send order updates
+    PetPooja will POST to this endpoint with order status changes
+    """
+    try:
+        rest_id = request_data.get('restID')
+        order_id = request_data.get('orderID')  # Our system's order ID
+        status = request_data.get('status')
+        cancel_reason = request_data.get('cancel_reason')
+        min_prep_time = request_data.get('minimum_prep_time')
+        min_delivery_time = request_data.get('minimum_delivery_time')
+        rider_name = request_data.get('rider_name')
+        rider_phone = request_data.get('rider_phone_number')
+        is_modified = request_data.get('is_modified', False)
+        
+        logger.info(f"PetPooja callback received for order: {order_id}, status: {status}")
+        
+        # Find order in our system
+        order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        if not order:
+            logger.error(f"Order not found: {order_id}")
+            return {"success": False, "message": "Order not found"}
+        
+        # Update order based on PetPooja status
+        update_data = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "petpooja_rest_id": rest_id,
+            "petpooja_status": int(status) if status else None,
+            "is_modified": is_modified
+        }
+        
+        # Store rider info if provided
+        if rider_name:
+            update_data['rider_name'] = rider_name
+        if rider_phone:
+            update_data['rider_phone'] = rider_phone
+        
+        # Map PetPooja status to our system
+        if status == "-1":
+            # Cancelled
+            update_data['status'] = OrderStatus.CANCELLED.value
+            update_data['is_deleted'] = True
+            if cancel_reason:
+                update_data['special_instructions'] = f"{order.get('special_instructions', '')}\n\nCancelled by PetPooja: {cancel_reason}"
+        
+        elif status in ["1", "2", "3"]:
+            # Accepted/Confirmed
+            update_data['status'] = OrderStatus.CONFIRMED.value
+            if min_prep_time:
+                update_data['petpooja_prep_time'] = min_prep_time
+        
+        elif status == "4":
+            # Dispatched
+            update_data['status'] = OrderStatus.PICKED_UP.value
+            if rider_name:
+                update_data['assigned_delivery_partner_name'] = rider_name
+            if rider_phone:
+                update_data['assigned_delivery_partner_phone'] = rider_phone
+        
+        elif status == "5":
+            # Food Ready
+            update_data['status'] = OrderStatus.READY.value
+            update_data['is_ready'] = True
+            update_data['ready_at'] = datetime.now(timezone.utc).isoformat()
+        
+        elif status == "10":
+            # Delivered
+            update_data['status'] = OrderStatus.DELIVERED.value
+            update_data['delivered_at'] = datetime.now(timezone.utc).isoformat()
+        
+        # Update modified flag
+        if is_modified:
+            update_data['modified_after_ready'] = True
+        
+        await db.orders.update_one({"id": order_id}, {"$set": update_data})
+        
+        # Log the webhook event
+        log = Log(
+            order_id=order_id,
+            action="petpooja_callback",
+            performed_by="system",
+            after_data=request_data
+        )
+        log_doc = log.model_dump()
+        log_doc['timestamp'] = log_doc['timestamp'].isoformat()
+        await db.logs.insert_one(log_doc)
+        
+        return {"success": True, "message": "Order updated successfully"}
+    
+    except Exception as e:
+        logger.error(f"PetPooja callback error: {str(e)}")
+        return {"success": False, "message": str(e)}
+
+@api_router.post("/petpooja/payment-webhook")
+async def petpooja_payment_webhook(request_data: Dict[str, Any]):
+    """
+    Universal webhook endpoint for PetPooja - handles multiple formats
+    Format 1: Payment data with order ID in comment field
+    Format 2: Full order data with customer info and items
+    Format 3: Status updates
+    Format 4: PetPooja standard format (nested under properties)
+    """
+    try:
+        logger.info(f"PetPooja webhook received: {request_data}")
+        
+        # Detect which format we received
+        if 'properties' in request_data and 'Order' in request_data.get('properties', {}):
+            # Format 4: PetPooja standard nested format
+            logger.info("Detected: PetPooja standard format (nested properties)")
+            return await handle_petpooja_standard_format(request_data)
+        elif 'order_id' in request_data and 'items' in request_data:
+            # Format 2: Full order data with items
+            logger.info("Detected: Full order data format")
+            return await handle_petpooja_new_order(request_data)
+        elif 'orderId' in request_data and 'status' in request_data and 'items' not in request_data:
+            # Format 3: Status update
+            logger.info("Detected: Status update format")
+            return await handle_petpooja_status_update(request_data)
+        else:
+            # Format 1: Payment/bill data with comment field
+            logger.info("Detected: Payment/bill format")
+            return await handle_petpooja_payment(request_data)
+            
+    except Exception as e:
+        logger.error(f"PetPooja webhook error: {str(e)}")
+        return {"success": False, "message": str(e)}
+
+async def handle_petpooja_standard_format(request_data: Dict[str, Any]):
+    """Handle PetPooja's standard format with nested properties"""
+    try:
+        from uuid import uuid4
+        from datetime import datetime, timezone
+        
+        properties = request_data.get('properties', {})
+        order_data = properties.get('Order', {})
+        customer_data = properties.get('Customer', {})
+        restaurant_data = properties.get('Restaurant', {})
+        order_items = properties.get('OrderItem', [])
+        
+        # Extract order information
+        petpooja_order_id = str(order_data.get('orderID', ''))
+        customer_name = customer_data.get('name', '')
+        customer_phone = customer_data.get('phone', '')
+        total_amount = float(order_data.get('total', 0))
+        payment_type = order_data.get('payment_type', 'cash')
+        custom_payment_type = order_data.get('custom_payment_type', '')
+        order_type = order_data.get('order_type', '')
+        created_on = order_data.get('created_on', '')
+        comment = order_data.get('comment', '')
+        
+        logger.info(f"PetPooja Order: {petpooja_order_id}, Customer: {customer_phone}, Amount: {total_amount}")
+        
+        # Check if order contains cake items and calculate cake-only amount
+        has_custom_cake = False
+        custom_cake_details = []
+        cake_only_amount = 0.0
+        
+        for item in order_items:
+            item_name = str(item.get('name', '')).lower()
+            category = str(item.get('category_name', '')).lower()
+            
+            # Check if item is a cake/pastry (including category check)
+            if any(keyword in item_name for keyword in ['cake', 'pastry', 'pasteries', 'forest', 'truffle', 'custom']) or \
+               any(keyword in category for keyword in ['cake', 'pastry', 'pasteries', 'pastries', 'custom']):
+                has_custom_cake = True
+                # Use item total INCLUDING tax (total + tax fields)
+                item_base = float(item.get('total', 0) or item.get('price', 0))
+                item_tax = float(item.get('tax', 0) or 0) + float(item.get('tax_amount', 0) or 0)
+                # Also check for itemtax, item_tax, gst etc
+                if item_tax == 0:
+                    item_tax = float(item.get('itemtax', 0) or 0) + float(item.get('item_tax', 0) or 0) + float(item.get('gst', 0) or 0)
+                item_total_with_tax = item_base + item_tax
+                
+                custom_cake_details.append({
+                    "name": item.get('name', ''),
+                    "category": item.get('category_name', ''),
+                    "quantity": item.get('quantity', 1),
+                    "price": item.get('price', 0),
+                    "total_before_tax": item_base,
+                    "tax": item_tax,
+                    "total": item_total_with_tax
+                })
+                cake_only_amount += item_total_with_tax
+        
+        # Use cake-only amount for syncing, not full bill total
+        sync_amount = cake_only_amount if has_custom_cake else total_amount
+        logger.info(f"PetPooja bill total: {total_amount}, cake-only amount: {cake_only_amount}, sync amount: {sync_amount}")
+        
+        # Store bill in petpooja_bills collection
+        bill_doc = {
+            "id": f"bill-{str(uuid4())[:8]}",
+            "bill_number": petpooja_order_id,
+            "bill_data": request_data,
+            "amount": total_amount,
+            "cake_only_amount": cake_only_amount,
+            "order_number": None,  # Will try to match
+            "payment_method": custom_payment_type or payment_type,
+            "synced_to_order": False,
+            "sync_error": None,
+            "has_custom_cake": has_custom_cake,
+            "custom_cake_details": custom_cake_details,
+            "customer_name": customer_name,
+            "customer_phone": customer_phone,
+            "petpooja_status": order_data.get('status', ''),
+            "order_type": order_type,
+            "comment": comment,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "petpooja_created_on": created_on
+        }
+        
+        # Handle cancelled/deleted orders from PetPooja
+        petpooja_status = str(order_data.get('status', '')).lower()
+        if petpooja_status in ['cancelled', 'canceled', 'deleted', 'removed']:
+            # Find and reverse any synced payment for this bill
+            existing_payment = await db.payments.find_one(
+                {"petpooja_bill_number": petpooja_order_id},
+                {"_id": 0}
+            )
+            if existing_payment:
+                order_for_reversal = await db.orders.find_one({"id": existing_payment['order_id']}, {"_id": 0})
+                if order_for_reversal:
+                    # Remove the payment
+                    await db.payments.delete_one({"id": existing_payment['id']})
+                    
+                    # Recalculate paid from remaining payments
+                    remaining_payments = await db.payments.find(
+                        {"order_id": existing_payment['order_id']},
+                        {"_id": 0, "amount": 1}
+                    ).to_list(100)
+                    recalc_paid = sum(p.get('amount', 0) for p in remaining_payments)
+                    
+                    await db.orders.update_one(
+                        {"id": existing_payment['order_id']},
+                        {"$set": {
+                            "paid_amount": recalc_paid,
+                            "pending_amount": order_for_reversal['total_amount'] - recalc_paid,
+                            "updated_at": datetime.now(timezone.utc).isoformat()
+                        }}
+                    )
+                    logger.info(f"Reversed payment for cancelled PetPooja bill {petpooja_order_id}")
+            
+            bill_doc["sync_error"] = f"Bill cancelled in PetPooja (status: {petpooja_status})"
+            bill_doc["is_cancelled"] = True
+            # Upsert bill doc
+            await db.petpooja_bills.update_one(
+                {"bill_number": petpooja_order_id},
+                {"$set": bill_doc},
+                upsert=True
+            )
+            return {"success": True, "message": "Cancelled bill processed - payment reversed"}
+        
+        # Only process if it has cake/pastry items
+        if not has_custom_cake:
+            bill_doc["sync_error"] = "No cake/pastry items found"
+            await db.petpooja_bills.update_one(
+                {"bill_number": petpooja_order_id},
+                {"$set": bill_doc},
+                upsert=True
+            )
+            logger.info(f"PetPooja order {petpooja_order_id} has no cake items - skipped")
+            return {"success": True, "message": "Order saved but no cake items found"}
+        
+        logger.info(f"PetPooja order {petpooja_order_id} has cake items: {[d['name'] for d in custom_cake_details]}")
+        
+        # Try to find matching order in our CRM
+        matching_orders = []
+        
+        # Strategy 1: If comment field has our order ID
+        if comment and comment.strip():
+            order_id_from_comment = comment.strip()
+            matching_order = await db.orders.find_one({
+                "$or": [
+                    {"order_number": order_id_from_comment},
+                    {"id": order_id_from_comment}
+                ]
+            }, {"_id": 0})
+            if matching_order:
+                matching_orders.append(matching_order)
+                logger.info(f"Matched by comment field: {order_id_from_comment}")
+        
+        # Strategy 2: Match by phone number (ONLY if comment has order ID failed AND bill has cake items)
+        # This prevents non-cake purchases (cream rolls, coffee) from being matched to cake orders
+        if not matching_orders and customer_phone and has_custom_cake and comment and comment.strip():
+            # Only do phone matching if there was an order ID attempt in comment that didn't match
+            # This prevents random phone matches for walk-in purchases
+            clean_phone = customer_phone.replace('+91', '').replace('-', '').replace(' ', '').strip()
+            
+            if clean_phone and clean_phone != '1111111111':  # Skip dummy phone
+                # Search for orders with matching phone from last 48 hours
+                two_days_ago = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+                matching_orders = await db.orders.find({
+                    "$or": [
+                        {"customer_info.phone": {"$regex": clean_phone}},
+                        {"customer_info.phone": customer_phone}
+                    ],
+                    "created_at": {"$gte": two_days_ago},
+                    "lifecycle_status": {"$in": ["pending_payment", "hold", "active"]}
+                }, {"_id": 0}).to_list(10)
+                
+                if matching_orders:
+                    logger.info(f"Found {len(matching_orders)} potential matches by phone: {clean_phone}")
+        
+        if matching_orders:
+            # Found match - sync payment
+            order = matching_orders[0]
+            
+            # Check if a payment with this bill number already exists (bill edit scenario)
+            existing_payment = None
+            if petpooja_order_id:
+                existing_payment = await db.payments.find_one(
+                    {"petpooja_bill_number": petpooja_order_id, "order_id": order['id']},
+                    {"_id": 0}
+                )
+            
+            if existing_payment:
+                # Bill was EDITED in PetPooja - update existing payment with cake-only amount
+                old_amount = existing_payment.get('amount', 0)
+                amount_diff = sync_amount - old_amount
+                
+                await db.payments.update_one(
+                    {"id": existing_payment['id']},
+                    {"$set": {
+                        "amount": sync_amount,
+                        "payment_method": custom_payment_type or payment_type,
+                        "paid_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_from_petpooja": True
+                    }}
+                )
+                logger.info(f"Updated existing payment {existing_payment['id']} from {old_amount} to {sync_amount} (diff: {amount_diff})")
+                
+                # Recalculate total paid from all payments for this order
+                all_payments = await db.payments.find(
+                    {"order_id": order['id']},
+                    {"_id": 0, "amount": 1}
+                ).to_list(100)
+                new_paid_amount = sum(p.get('amount', 0) for p in all_payments)
+            else:
+                # New payment - create fresh record with cake-only amount
+                payment = Payment(
+                    order_id=order['id'],
+                    amount=sync_amount,
+                    payment_method=custom_payment_type or payment_type,
+                    petpooja_bill_number=petpooja_order_id,
+                    recorded_by="system"
+                )
+                
+                payment_doc = payment.model_dump()
+                payment_doc['paid_at'] = payment_doc['paid_at'].isoformat()
+                await db.payments.insert_one(payment_doc)
+                
+                # Recalculate from all payments to prevent doubling
+                all_payments = await db.payments.find(
+                    {"order_id": order['id']},
+                    {"_id": 0, "amount": 1}
+                ).to_list(100)
+                new_paid_amount = sum(p.get('amount', 0) for p in all_payments)
+            
+            # Get branch-specific threshold first, then fall back to global
+            outlet_id = order.get('outlet_id')
+            min_percentage = 20.0
+            if outlet_id:
+                branch_threshold = await db.branch_payment_thresholds.find_one({"outlet_id": outlet_id}, {"_id": 0})
+                if branch_threshold:
+                    min_percentage = branch_threshold.get('minimum_payment_percentage', 20.0)
+                else:
+                    sys_settings = await db.system_settings.find_one({"id": "system_settings"}, {"_id": 0})
+                    if sys_settings:
+                        min_percentage = sys_settings.get('minimum_payment_percentage', 20.0)
+            
+            payment_percentage = (new_paid_amount / order['total_amount'] * 100) if order['total_amount'] > 0 else 0
+            
+            current_lifecycle = order.get('lifecycle_status', 'pending_payment')
+            new_lifecycle = current_lifecycle
+            new_status = order.get('status', 'pending')
+            
+            if current_lifecycle == 'pending_payment' and payment_percentage >= min_percentage:
+                new_lifecycle = 'active'
+                new_status = OrderStatus.CONFIRMED.value
+                logger.info(f"Order {order['id']} moved to active (payment: {payment_percentage:.1f}% >= {min_percentage}%)")
+            elif current_lifecycle == 'pending_payment':
+                logger.info(f"Order {order['id']} still pending (payment: {payment_percentage:.1f}% < {min_percentage}%)")
+            
+            # Auto-remove from credit orders when fully paid
+            extra_update = {}
+            if order.get('is_credit_order') and not order.get('is_complementary') and payment_percentage >= 100:
+                extra_update["is_credit_order"] = False
+                extra_update["lifecycle_status"] = "active"
+                extra_update["status"] = OrderStatus.CONFIRMED.value
+                logger.info(f"Credit order {order['id']} fully paid - auto-removed from credit list")
+            
+            await db.orders.update_one(
+                {"id": order['id']},
+                {"$set": {
+                    "paid_amount": new_paid_amount,
+                    "pending_amount": order['total_amount'] - new_paid_amount,
+                    "lifecycle_status": new_lifecycle,
+                    "status": new_status,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    **extra_update
+                }}
+            )
+            
+            bill_doc["synced_to_order"] = True
+            bill_doc["order_number"] = order['order_number']
+            bill_doc["order_id"] = order['id']
+            bill_doc["outlet_id"] = order.get('outlet_id')
+            
+            logger.info(f"PetPooja order {petpooja_order_id} matched to {order['order_number']}")
+            
+            await db.petpooja_bills.update_one(
+                {"bill_number": petpooja_order_id},
+                {"$set": bill_doc},
+                upsert=True
+            )
+            
+            return {
+                "success": True,
+                "message": "Order matched and synced",
+                "order_number": order['order_number'],
+                "matched": True
+            }
+        else:
+            # No match found - store for manual review
+            bill_doc["sync_error"] = "No matching order found - pending manual review"
+            await db.petpooja_bills.update_one(
+                {"bill_number": petpooja_order_id},
+                {"$set": bill_doc},
+                upsert=True
+            )
+            
+            logger.warning(f"PetPooja order {petpooja_order_id} - no matching CRM order found")
+            
+            return {
+                "success": True,
+                "message": "Order saved for manual review - no matching CRM order found",
+                "matched": False,
+                "petpooja_order_id": petpooja_order_id,
+                "has_cake": has_custom_cake
+            }
+    
+    except Exception as e:
+        logger.error(f"PetPooja standard format handler error: {str(e)}")
+        return {"success": False, "message": str(e)}
+
+async def handle_petpooja_payment(request_data: Dict[str, Any]):
+    """Handle payment/bill format with order ID in comment"""
+    try:
+        from uuid import uuid4
+        from datetime import datetime, timezone
+        
+        bill_number = request_data.get('bill_number') or request_data.get('billNo')
+        amount = float(request_data.get('amount', 0) or request_data.get('totalAmount', 0))
+        comment = request_data.get('comment') or request_data.get('remarks', '')
+        payment_method = request_data.get('payment_method', 'cash')
+        
+        if not comment:
+            logger.error("No comment/order ID found in PetPooja webhook")
+            return {"success": False, "message": "Order ID not found in comment"}
+        
+        # Extract our Order ID from comment (format: USB-20250305-001)
+        order_id = comment.strip()
+        
+        # Handle cancelled/deleted status
+        status = str(request_data.get('status', '')).lower()
+        if status in ['cancelled', 'canceled', 'deleted', 'removed']:
+            # Reverse any existing payment for this bill
+            if bill_number:
+                existing_payment = await db.payments.find_one(
+                    {"petpooja_bill_number": bill_number},
+                    {"_id": 0}
+                )
+                if existing_payment:
+                    order_for_reversal = await db.orders.find_one({"id": existing_payment['order_id']}, {"_id": 0})
+                    await db.payments.delete_one({"id": existing_payment['id']})
+                    if order_for_reversal:
+                        remaining = await db.payments.find({"order_id": existing_payment['order_id']}, {"_id": 0, "amount": 1}).to_list(100)
+                        recalc_paid = sum(p.get('amount', 0) for p in remaining)
+                        await db.orders.update_one(
+                            {"id": existing_payment['order_id']},
+                            {"$set": {"paid_amount": recalc_paid, "pending_amount": order_for_reversal['total_amount'] - recalc_paid, "updated_at": datetime.now(timezone.utc).isoformat()}}
+                        )
+                    logger.info(f"Reversed payment for cancelled bill {bill_number}")
+            return {"success": True, "message": "Cancelled bill - payment reversed"}
+        
+        # Store/update the bill in petpooja_bills collection for tracking
+        bill_doc = {
+            "id": f"bill-{str(uuid4())[:8]}",
+            "bill_number": bill_number,
+            "bill_data": request_data,
+            "amount": amount,
+            "order_number": order_id,
+            "payment_method": payment_method,
+            "synced_to_order": False,
+            "sync_error": None,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Upsert: update if bill_number exists, insert if new
+        if bill_number:
+            await db.petpooja_bills.update_one(
+                {"bill_number": bill_number},
+                {"$set": bill_doc},
+                upsert=True
+            )
+        else:
+            await db.petpooja_bills.insert_one(bill_doc)
+        
+        # Find order in our system by order_number or id
+        order = await db.orders.find_one({
+            "$or": [
+                {"order_number": order_id},
+                {"id": order_id}
+            ]
+        }, {"_id": 0})
+        
+        if not order:
+            logger.error(f"Order not found for ID: {order_id}")
+            bill_doc["sync_error"] = f"Order {order_id} not found"
+            if bill_number:
+                await db.petpooja_bills.update_one({"bill_number": bill_number}, {"$set": bill_doc}, upsert=True)
+            else:
+                await db.petpooja_bills.insert_one(bill_doc)
+            return {"success": False, "message": f"Order {order_id} not found"}
+        
+        # Check if order is on hold
+        if order.get('is_hold', False):
+            logger.info(f"Order {order_id} is on hold, not syncing payment")
+            bill_doc["sync_error"] = "Order is on hold"
+            if bill_number:
+                await db.petpooja_bills.update_one({"bill_number": bill_number}, {"$set": bill_doc}, upsert=True)
+            else:
+                await db.petpooja_bills.insert_one(bill_doc)
+            return {"success": False, "message": "Order is on hold"}
+        
+        # Check if payment with this bill number already exists (bill edit scenario)
+        existing_payment = None
+        if bill_number:
+            existing_payment = await db.payments.find_one(
+                {"petpooja_bill_number": bill_number, "order_id": order['id']},
+                {"_id": 0}
+            )
+        
+        if existing_payment:
+            # Bill was EDITED in PetPooja - update existing payment
+            old_amount = existing_payment.get('amount', 0)
+            await db.payments.update_one(
+                {"id": existing_payment['id']},
+                {"$set": {
+                    "amount": amount,
+                    "payment_method": payment_method,
+                    "paid_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_from_petpooja": True
+                }}
+            )
+            logger.info(f"Updated existing payment {existing_payment['id']} from {old_amount} to {amount}")
+            
+            # Recalculate total paid from all payments
+            all_payments = await db.payments.find(
+                {"order_id": order['id']},
+                {"_id": 0, "amount": 1}
+            ).to_list(100)
+            new_paid_amount = sum(p.get('amount', 0) for p in all_payments)
+        else:
+            # New payment - create fresh record
+            payment = Payment(
+                order_id=order['id'],
+                amount=amount,
+                payment_method=payment_method,
+                petpooja_bill_number=bill_number,
+                recorded_by="system"
+            )
+            
+            payment_doc = payment.model_dump()
+            payment_doc['paid_at'] = payment_doc['paid_at'].isoformat()
+            await db.payments.insert_one(payment_doc)
+            
+            # Always recalculate from all payments to prevent doubling
+            all_payments = await db.payments.find(
+                {"order_id": order['id']},
+                {"_id": 0, "amount": 1}
+            ).to_list(100)
+            new_paid_amount = sum(p.get('amount', 0) for p in all_payments)
+        new_pending = order.get('total_amount', 0) - new_paid_amount
+        
+        bill_numbers = order.get('petpooja_bill_numbers', [])
+        if bill_number and bill_number not in bill_numbers:
+            bill_numbers.append(bill_number)
+        
+        # Get minimum payment threshold - check branch-specific first, then global
+        outlet_id = order.get('outlet_id')
+        min_percentage = 20.0
+        if outlet_id:
+            branch_threshold = await db.branch_payment_thresholds.find_one({"outlet_id": outlet_id}, {"_id": 0})
+            if branch_threshold:
+                min_percentage = branch_threshold.get('minimum_payment_percentage', 20.0)
+            else:
+                settings = await db.system_settings.find_one({"id": "system_settings"}, {"_id": 0})
+                min_percentage = settings.get('minimum_payment_percentage', 20.0) if settings else 20.0
+        else:
+            settings = await db.system_settings.find_one({"id": "system_settings"}, {"_id": 0})
+            min_percentage = settings.get('minimum_payment_percentage', 20.0) if settings else 20.0
+        
+        # Calculate payment percentage
+        total_amount = order.get('total_amount', 0)
+        payment_percentage = (new_paid_amount / total_amount * 100) if total_amount > 0 else 0
+        
+        # Determine lifecycle status and order status
+        current_lifecycle = order.get('lifecycle_status', 'pending_payment')
+        new_lifecycle_status = current_lifecycle
+        new_status = order.get('status', 'pending')
+        
+        # Check if order should move from pending_payment to active
+        if current_lifecycle == 'pending_payment' and payment_percentage >= min_percentage:
+            new_lifecycle_status = 'active'
+            new_status = 'confirmed'
+            logger.info(f"Order {order['id']} moved to active (payment: {payment_percentage:.1f}% >= {min_percentage}%)")
+        elif current_lifecycle == 'pending_payment':
+            logger.info(f"Order {order['id']} still pending (payment: {payment_percentage:.1f}% < {min_percentage}%)")
+        
+        update_data = {
+            "paid_amount": new_paid_amount,
+            "pending_amount": new_pending,
+            "payment_synced_from_petpooja": True,
+            "petpooja_bill_numbers": bill_numbers,
+            "petpooja_comment": comment,
+            "lifecycle_status": new_lifecycle_status,
+            "status": new_status,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # Auto-remove from credit orders when fully paid (and not complementary)
+        if order.get('is_credit_order') and not order.get('is_complementary') and payment_percentage >= 100:
+            update_data["is_credit_order"] = False
+            update_data["lifecycle_status"] = "active"
+            update_data["status"] = "confirmed"
+            logger.info(f"Credit order {order['id']} fully paid - auto-removed from credit list")
+        
+        await db.orders.update_one({"id": order['id']}, {"$set": update_data})
+        
+        # Log the payment sync
+        log = Log(
+            order_id=order['id'],
+            action="payment_synced_from_petpooja",
+            performed_by="system",
+            after_data={
+                "bill_number": bill_number,
+                "amount": amount,
+                "payment_method": payment_method
+            }
+        )
+        log_doc = log.model_dump()
+        log_doc['timestamp'] = log_doc['timestamp'].isoformat()
+        await db.logs.insert_one(log_doc)
+        
+        logger.info(f"Payment synced for order {order_id}: ₹{amount}")
+        
+        # Mark bill as synced and store in petpooja_bills collection (upsert to prevent duplicates)
+        bill_doc["synced_to_order"] = True
+        bill_doc["order_id"] = order['id']
+        bill_doc["outlet_id"] = order.get('outlet_id')
+        if bill_number:
+            await db.petpooja_bills.update_one(
+                {"bill_number": bill_number},
+                {"$set": bill_doc},
+                upsert=True
+            )
+        else:
+            await db.petpooja_bills.update_one(
+                {"order_number": order_id, "bill_number": {"$exists": False}},
+                {"$set": bill_doc},
+                upsert=True
+            )
+        
+        # Send WhatsApp notification for payment confirmation
+        try:
+            await send_whatsapp_notification(order["id"], WhatsAppTemplateEvent.ORDER_CONFIRMED)
+        except Exception as e:
+            logger.error(f"WhatsApp notification failed: {str(e)}")
+        
+        return {
+            "success": True,
+            "message": "Payment synced successfully",
+            "order_id": order['id'],
+            "order_number": order.get('order_number'),
+            "amount": amount,
+            "status": new_status,
+            "moved_to_manage": new_status == 'confirmed'
+        }
+    except Exception as e:
+        logger.error(f"PetPooja payment handler error: {str(e)}")
+        return {"success": False, "message": str(e)}
+
+@api_router.post("/petpooja/order-webhook")
+async def petpooja_order_webhook(request_data: Dict[str, Any]):
+    """
+    Main webhook endpoint for PetPooja orders
+    Handles: New orders, status updates, and general order data
+    This is the format PetPooja actually sends based on user's PHP testing
+    """
+    try:
+        logger.info(f"PetPooja order webhook received: {request_data}")
+        
+        # Store raw data for audit
+        from uuid import uuid4
+        from datetime import datetime, timezone
+        
+        # Detect webhook type
+        if 'order_id' in request_data:
+            # New order or order data
+            return await handle_petpooja_new_order(request_data)
+        elif 'orderId' in request_data and 'status' in request_data:
+            # Status update
+            return await handle_petpooja_status_update(request_data)
+        else:
+            # Unknown format - store for review
+            logger.warning(f"Unknown PetPooja webhook format: {request_data}")
+            bill_doc = {
+                "id": f"bill-{str(uuid4())[:8]}",
+                "bill_number": f"UNKNOWN-{int(datetime.now(timezone.utc).timestamp())}",
+                "bill_data": request_data,
+                "amount": 0,
+                "order_number": "UNKNOWN",
+                "payment_method": "unknown",
+                "synced_to_order": False,
+                "sync_error": "Unknown webhook format",
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            await db.petpooja_bills.insert_one(bill_doc)
+            return {"success": True, "message": "Data saved for review"}
+            
+    except Exception as e:
+        logger.error(f"PetPooja order webhook error: {str(e)}")
+        return {"success": False, "message": str(e)}
+
+async def handle_petpooja_new_order(data: Dict[str, Any]):
+    """Handle new order data from PetPooja"""
+    from uuid import uuid4
+    from datetime import datetime, timezone
+    
+    petpooja_order_id = data.get('order_id', '')
+    customer_name = data.get('customer_name') or data.get('customerName', '')
+    customer_phone = data.get('customer_phone') or data.get('customerPhone', '')
+    status = data.get('order_status') or data.get('status', 'pending')
+    total_amount = float(data.get('total_amount') or data.get('totalAmount', 0))
+    
+    # Check if this order contains "Custom Cake" items
+    items = data.get('items', []) or data.get('orderItems', [])
+    has_custom_cake = False
+    custom_cake_details = []
+    
+    for item in items:
+        item_name = str(item.get('item_name', '') or item.get('itemName', '')).lower()
+        if 'custom cake' in item_name or 'customcake' in item_name or 'custom' in item_name:
+            has_custom_cake = True
+            custom_cake_details.append({
+                "name": item.get('item_name') or item.get('itemName', ''),
+                "quantity": item.get('quantity', 1),
+                "price": item.get('price', 0)
+            })
+    
+    # Store bill in petpooja_bills collection
+    bill_doc = {
+        "id": f"bill-{str(uuid4())[:8]}",
+        "bill_number": petpooja_order_id,
+        "bill_data": data,
+        "amount": total_amount,
+        "order_number": None,  # Will try to match
+        "payment_method": data.get('payment_method', 'cash'),
+        "synced_to_order": False,
+        "sync_error": None,
+        "has_custom_cake": has_custom_cake,
+        "custom_cake_details": custom_cake_details,
+        "customer_name": customer_name,
+        "customer_phone": customer_phone,
+        "petpooja_status": status,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    # Only process if it has custom cake
+    if not has_custom_cake:
+        bill_doc["sync_error"] = "No custom cake items found"
+        await db.petpooja_bills.insert_one(bill_doc)
+        logger.info(f"PetPooja order {petpooja_order_id} has no custom cake - skipped")
+        return {"success": True, "message": "Order saved but no custom cake found"}
+    
+    # Try to find matching order in our CRM by phone number
+    matching_orders = []
+    if customer_phone:
+        # Clean phone number
+        clean_phone = customer_phone.replace('+91', '').replace('-', '').replace(' ', '').strip()
+        
+        # Search for orders with matching phone from last 48 hours
+        two_days_ago = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+        matching_orders = await db.orders.find({
+            "$or": [
+                {"customer_info.phone": {"$regex": clean_phone}},
+                {"customer_info.phone": customer_phone}
+            ],
+            "created_at": {"$gte": two_days_ago},
+            "$or": [
+                {"lifecycle_status": "pending_payment"},
+                {"lifecycle_status": "hold"}
+            ]
+        }, {"_id": 0}).to_list(10)
+    
+    if matching_orders:
+        # Found potential matches - use first one for now
+        order = matching_orders[0]
+        
+        # Record payment
+        payment = Payment(
+            order_id=order['id'],
+            amount=total_amount,
+            payment_method=data.get('payment_method', 'cash'),
+            petpooja_bill_number=petpooja_order_id,
+            recorded_by="system"
+        )
+        
+        payment_doc = payment.model_dump()
+        payment_doc['paid_at'] = payment_doc['paid_at'].isoformat()
+        await db.payments.insert_one(payment_doc)
+        
+        # Update order
+        new_paid_amount = order.get('paid_amount', 0) + total_amount
+        
+        await db.orders.update_one(
+            {"id": order['id']},
+            {"$set": {
+                "paid_amount": new_paid_amount,
+                "pending_amount": order['total_amount'] - new_paid_amount,
+                "lifecycle_status": "active",
+                "status": OrderStatus.CONFIRMED,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }}
+        )
+        
+        bill_doc["synced_to_order"] = True
+        bill_doc["order_number"] = order['order_number']
+        bill_doc["order_id"] = order['id']
+        bill_doc["outlet_id"] = order.get('outlet_id')
+        
+        logger.info(f"PetPooja order {petpooja_order_id} matched to {order['order_number']}")
+        
+        await db.petpooja_bills.insert_one(bill_doc)
+        
+        return {
+            "success": True,
+            "message": "Order matched and synced",
+            "order_number": order['order_number'],
+            "matched": True
+        }
+    else:
+        # No match found - store for manual review
+        bill_doc["sync_error"] = "No matching order found - pending manual review"
+        await db.petpooja_bills.insert_one(bill_doc)
+        
+        logger.warning(f"PetPooja order {petpooja_order_id} - no matching CRM order found")
+        
+        return {
+            "success": True,
+            "message": "Order saved for manual review",
+            "matched": False
+        }
+
+async def handle_petpooja_status_update(data: Dict[str, Any]):
+    """Handle status update from PetPooja"""
+    from datetime import datetime, timezone
+    
+    petpooja_order_id = data.get('orderId', '')
+    new_status = data.get('status', '')
+    
+    logger.info(f"PetPooja status update: {petpooja_order_id} -> {new_status}")
+    
+    # Find bill in our system
+    bill = await db.petpooja_bills.find_one(
+        {"bill_number": petpooja_order_id},
+        {"_id": 0}
+    )
+    
+    if bill and bill.get('order_id'):
+        # Update our order status if needed
+        # Map PetPooja statuses to our statuses
+        status_map = {
+            "confirmed": OrderStatus.CONFIRMED,
+            "ready": OrderStatus.READY,
+            "dispatched": OrderStatus.OUT_FOR_DELIVERY,
+            "delivered": OrderStatus.DELIVERED,
+            "cancelled": OrderStatus.CANCELLED
+        }
+        
+        our_status = status_map.get(new_status.lower())
+        if our_status:
+            await db.orders.update_one(
+                {"id": bill['order_id']},
+                {"$set": {
+                    "status": our_status,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }}
+            )
+        
+        # Update bill status
+        await db.petpooja_bills.update_one(
+            {"bill_number": petpooja_order_id},
+            {"$set": {"petpooja_status": new_status}}
+        )
+        
+        return {"success": True, "message": "Status updated"}
+    
+    return {"success": True, "message": "Status update received"}
+
+@api_router.get("/petpooja/webhook-url")
+async def get_petpooja_webhook_url(
+    request: Request,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get the PetPooja webhook URLs to provide to PetPooja team"""
+    # Get the actual domain from request headers or use base URL
+    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    forwarded_proto = request.headers.get("x-forwarded-proto", "https")
+    
+    if forwarded_host and forwarded_host != "localhost:8001":
+        base_url = f"{forwarded_proto}://{forwarded_host}"
+    else:
+        base_url = str(request.base_url).rstrip('/')
+    
+    callback_url = f"{base_url}/api/petpooja/callback"
+    payment_url = f"{base_url}/api/petpooja/payment-webhook"
+    
+    return {
+        "payment_webhook_url": payment_url,
+        "status_callback_url": callback_url,
+        "payment_webhook_description": "For syncing bill/payment data - include Order ID in 'comment' field",
+        "status_callback_description": "For order status updates from PetPooja POS",
+        "payment_expected_fields": ["bill_number", "amount", "comment (Order ID)", "payment_method"],
+        "callback_expected_fields": [
+            "restID", "orderID", "status", "cancel_reason", 
+            "minimum_prep_time", "minimum_delivery_time", 
+            "rider_name", "rider_phone_number", "is_modified"
+        ]
+    }
+
+@api_router.get("/petpooja/orders")
+async def get_petpooja_orders(
+    current_user: User = Depends(get_current_user)
+):
+    """Get all orders that came from PetPooja POS"""
+    query = {"petpooja_rest_id": {"$exists": True, "$ne": None}}
+    
+    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    
+    # Convert datetime strings
+    for order in orders:
+        if isinstance(order.get('created_at'), str):
+            order['created_at'] = datetime.fromisoformat(order['created_at'])
+        if isinstance(order.get('updated_at'), str):
+            order['updated_at'] = datetime.fromisoformat(order['updated_at'])
+        if isinstance(order.get('ready_at'), str) and order.get('ready_at'):
+            order['ready_at'] = datetime.fromisoformat(order['ready_at'])
+        if isinstance(order.get('delivered_at'), str) and order.get('delivered_at'):
+            order['delivered_at'] = datetime.fromisoformat(order['delivered_at'])
+    
+    return orders
+
+# ==================== PAYMENT MANAGEMENT ====================
+
+@api_router.post("/payments")
+async def record_payment(
+    payment_data: PaymentCreate,
+    current_user: User = Depends(get_current_user)
+):
+    """Record a payment for an order"""
+    # Get order
+    order = await db.orders.find_one({"id": payment_data.order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Get payment threshold for this outlet
+    outlet_id = order.get('outlet_id')
+    threshold_percentage = 20.0  # Default
+    
+    # Try to get branch-specific threshold first
+    branch_threshold = await db.branch_payment_thresholds.find_one({"outlet_id": outlet_id}, {"_id": 0})
+    if branch_threshold:
+        threshold_percentage = branch_threshold.get('minimum_payment_percentage', 20.0)
+    else:
+        # Fall back to system-wide threshold
+        system_settings = await db.system_settings.find_one({"id": "system_settings"}, {"_id": 0})
+        if system_settings:
+            threshold_percentage = system_settings.get('minimum_payment_percentage', 20.0)
+    
+    # Create payment record
+    payment = Payment(
+        order_id=payment_data.order_id,
+        amount=payment_data.amount,
+        payment_method=payment_data.payment_method,
+        petpooja_bill_number=payment_data.petpooja_bill_number,
+        recorded_by=current_user.id
+    )
+    
+    doc = payment.model_dump()
+    doc['paid_at'] = doc['paid_at'].isoformat()
+    
+    await db.payments.insert_one(doc)
+    
+    # Update order paid amount
+    new_paid_amount = order['paid_amount'] + payment_data.amount
+    new_pending_amount = order['total_amount'] - new_paid_amount
+    
+    update_data = {
+        "paid_amount": new_paid_amount,
+        "pending_amount": new_pending_amount,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    # Add PetPooja bill number if provided
+    if payment_data.petpooja_bill_number:
+        bill_numbers = order.get('petpooja_bill_numbers', [])
+        if payment_data.petpooja_bill_number not in bill_numbers:
+            bill_numbers.append(payment_data.petpooja_bill_number)
+            update_data['petpooja_bill_numbers'] = bill_numbers
+    
+    # Check if payment meets the threshold percentage, move to manage orders
+    threshold_amount = order['total_amount'] * (threshold_percentage / 100)
+    moved_to_manage = new_paid_amount >= threshold_amount
+
+    if moved_to_manage:
+        update_data['is_hold'] = False
+        # Update lifecycle_status and status to move order to manage orders
+        update_data['lifecycle_status'] = 'active'
+        update_data['status'] = OrderStatus.CONFIRMED.value
+
+    # If this is a credit order and it just reached full payment, auto-release it
+    # (remove from credit list and let it follow the normal active flow)
+    credit_released_now = False
+    if order.get('is_credit_order') and not order.get('is_complementary'):
+        pay_pct = (new_paid_amount / order['total_amount'] * 100) if order['total_amount'] > 0 else 0
+        if pay_pct >= 100:
+            update_data['is_credit_order'] = False
+            update_data['credit_released_by'] = current_user.id
+            update_data['credit_released_at'] = datetime.now(timezone.utc).isoformat()
+            update_data['lifecycle_status'] = 'active'
+            update_data['status'] = OrderStatus.CONFIRMED.value
+            update_data['is_hold'] = False
+            credit_released_now = True
+
+    await db.orders.update_one({"id": payment_data.order_id}, {"$set": update_data})
+    
+    # Log the payment
+    log = Log(
+        order_id=payment_data.order_id,
+        action="payment_recorded",
+        performed_by=current_user.id,
+        after_data={"amount": payment_data.amount, "method": payment_data.payment_method}
+    )
+    log_doc = log.model_dump()
+    log_doc['timestamp'] = log_doc['timestamp'].isoformat()
+    await db.logs.insert_one(log_doc)
+
+    # Activity log (audit trail)
+    try:
+        await create_activity_log(
+            user=current_user,
+            action_type="payment_recorded",
+            description=f"Recorded payment of ₹{payment_data.amount} ({payment_data.payment_method}) for order {order.get('order_number', payment_data.order_id)}",
+            entity_type="payment",
+            entity_id=payment.id,
+            order_number=order.get('order_number'),
+            outlet_id=order.get('outlet_id'),
+            after_data={"amount": payment_data.amount, "method": payment_data.payment_method, "pending_after": new_pending_amount}
+        )
+    except Exception as _e:
+        logger.error(f"activity_log failed (payment): {_e}")
+
+    return {
+        "message": "Payment recorded successfully" + (" - Credit order released" if credit_released_now else ""),
+        "paid_amount": new_paid_amount,
+        "pending_amount": new_pending_amount,
+        "threshold_percentage": threshold_percentage,
+        "threshold_amount": threshold_amount,
+        "moved_to_manage": moved_to_manage,
+        "credit_released": credit_released_now
+    }
+
+@api_router.get("/payments/{order_id}")
+async def get_order_payments(
+    order_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Get all payments for an order"""
+    payments = await db.payments.find({"order_id": order_id}, {"_id": 0}).to_list(1000)
+    
+    for payment in payments:
+        if isinstance(payment.get('paid_at'), str):
+            payment['paid_at'] = datetime.fromisoformat(payment['paid_at'])
+    
+    return payments
+
+@api_router.get("/payments")
+async def get_all_payments(
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get all payments with order details grouped by order"""
+    # Build query
+    order_query = {"is_deleted": False}
+    if outlet_id:
+        order_query["outlet_id"] = outlet_id
+    
+    # Get all orders that have payments
+    orders = await db.orders.find(order_query, {"_id": 0}).to_list(10000)
+    
+    # Get all payments
+    payments = await db.payments.find({}, {"_id": 0}).to_list(10000)
+    
+    # Group payments by order_id
+    payments_by_order = {}
+    for payment in payments:
+        order_id = payment['order_id']
+        if order_id not in payments_by_order:
+            payments_by_order[order_id] = []
+        payments_by_order[order_id].append(payment)
+    
+    # Build response with order details
+    result = []
+    for order in orders:
+        order_id = order['id']
+        order_payments = payments_by_order.get(order_id, [])
+        
+        if order_payments:  # Only include orders with payments
+            result.append({
+                "order_id": order_id,
+                "order_number": order.get('order_number'),
+                "customer_name": order.get('customer_info', {}).get('name'),
+                "customer_phone": order.get('customer_info', {}).get('phone'),
+                "total_amount": order.get('total_amount', 0),
+                "paid_amount": order.get('paid_amount', 0),
+                "pending_amount": order.get('pending_amount', 0),
+                "outlet_id": order.get('outlet_id'),
+                "created_at": order.get('created_at'),
+                "payments": order_payments
+            })
+    
+    # Sort by most recent first
+    result.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+    
+    return result
+
+# ==================== CUSTOMERS ENDPOINT ====================
+
+@api_router.get("/customers")
+async def get_customers(
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Get all customers aggregated from orders"""
+    query = {"is_deleted": False}
+    
+    # Filter by outlet if not super admin
+    if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+        query["outlet_id"] = current_user.outlet_id
+    elif outlet_id:
+        query["outlet_id"] = outlet_id
+    
+    # Aggregate customers from orders
+    pipeline = [
+        {"$match": query},
+        {
+            "$group": {
+                "_id": "$customer_info.phone",
+                "name": {"$first": "$customer_info.name"},
+                "phone": {"$first": "$customer_info.phone"},
+                "email": {"$first": "$customer_info.email"},
+                "birthday": {"$first": "$customer_info.birthday"},
+                "gender": {"$first": "$customer_info.gender"},
+                "total_orders": {"$sum": 1},
+                "total_spent": {"$sum": "$paid_amount"},
+                "pending_amount": {"$sum": "$pending_amount"},
+                "last_order_date": {"$max": "$created_at"}
+            }
+        },
+        {"$sort": {"total_orders": -1}}
+    ]
+    
+    customers = await db.orders.aggregate(pipeline).to_list(1000)
+    
+    return customers
+
+# ==================== DASHBOARD WITH BRANCH SUMMARY ====================
+
+@api_router.get("/dashboard/branch-summary")
+async def get_branch_summary(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER, UserRole.FACTORY_MANAGER]))
+):
+    """Get branch-wise summary for dashboard"""
+    outlets = await db.outlets.find({"is_active": True}, {"_id": 0}).to_list(100)
+    today = datetime.now(timezone.utc).date().isoformat()
+    
+    branch_data = []
+    
+    for outlet in outlets:
+        outlet_id = outlet['id']
+        
+        # Total orders (all time)
+        total_orders = await db.orders.count_documents({
+            "outlet_id": outlet_id,
+            "is_deleted": False
+        })
+        
+        # Today's orders
+        todays_orders = await db.orders.count_documents({
+            "outlet_id": outlet_id,
+            "delivery_date": today,
+            "is_deleted": False
+        })
+        
+        # Total income (all paid amounts)
+        income_pipeline = [
+            {"$match": {"outlet_id": outlet_id, "is_deleted": False}},
+            {"$group": {"_id": None, "total": {"$sum": "$paid_amount"}}}
+        ]
+        income_result = await db.orders.aggregate(income_pipeline).to_list(1)
+        total_income = income_result[0]['total'] if income_result else 0
+        
+        # Pending orders (not ready, not delivered)
+        pending_orders = await db.orders.count_documents({
+            "outlet_id": outlet_id,
+            "status": {"$in": ["confirmed"]},
+            "is_deleted": False
+        })
+        
+        branch_data.append({
+            "outlet_id": outlet_id,
+            "outlet_name": outlet['name'],
+            "total_orders": total_orders,
+            "todays_orders": todays_orders,
+            "total_income": total_income,
+            "pending_orders": pending_orders
+        })
+    
+    return branch_data
+
+# ==================== DASHBOARD (Super Admin) ====================
+
+@api_router.get("/dashboard/stats", response_model=DashboardStats)
+async def get_dashboard_stats(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER, UserRole.FACTORY_MANAGER]))
+):
+    """Get dashboard statistics"""
+    today = datetime.now(timezone.utc).date().isoformat()
+    
+    # Total orders today
+    total_orders_today = await db.orders.count_documents({
+        "delivery_date": today,
+        "is_deleted": False
+    })
+    
+    # Total revenue today (only delivered orders)
+    delivered_orders = await db.orders.find({
+        "delivery_date": today,
+        "status": OrderStatus.DELIVERED.value,
+        "is_deleted": False
+    }, {"_id": 0, "total_amount": 1}).to_list(1000)
+    total_revenue_today = sum(order.get('total_amount', 0) for order in delivered_orders)
+    
+    # Pending orders (confirmed but not ready)
+    pending_orders = await db.orders.count_documents({
+        "status": OrderStatus.CONFIRMED.value,
+        "is_deleted": False
+    })
+    
+    # Ready orders
+    ready_orders = await db.orders.count_documents({
+        "status": OrderStatus.READY.value,
+        "is_deleted": False
+    })
+    
+    # Delivered orders today
+    delivered_orders_count = await db.orders.count_documents({
+        "delivery_date": today,
+        "status": OrderStatus.DELIVERED.value,
+        "is_deleted": False
+    })
+    
+    # Total outlets
+    total_outlets = await db.outlets.count_documents({"is_active": True})
+    
+    # Total users
+    total_users = await db.users.count_documents({"is_active": True})
+    
+    # Orders by occasion
+    orders_with_occasion = await db.orders.find({
+        "occasion": {"$ne": None},
+        "is_deleted": False
+    }, {"_id": 0, "occasion": 1}).to_list(1000)
+    
+    orders_by_occasion = {}
+    for order in orders_with_occasion:
+        occasion = order.get('occasion', 'Other')
+        orders_by_occasion[occasion] = orders_by_occasion.get(occasion, 0) + 1
+    
+    return DashboardStats(
+        total_orders_today=total_orders_today,
+        total_revenue_today=total_revenue_today,
+        pending_orders=pending_orders,
+        ready_orders=ready_orders,
+        delivered_orders=delivered_orders_count,
+        total_outlets=total_outlets,
+        total_users=total_users,
+        orders_by_occasion=orders_by_occasion
+    )
+
+# ==================== WHATSAPP NOTIFICATION FUNCTIONS ====================
+# Note: The unified `send_whatsapp_notification(order_id, event_type)` function is
+# defined further below alongside AiSensy helpers. It prefers AiSensy (when
+# configured) and falls back to MSG91. Do NOT redefine it here.
+
+# ==================== WHATSAPP TEMPLATE ENDPOINTS ====================
+
+@api_router.get("/whatsapp/templates", response_model=List[WhatsAppTemplateResponse])
+async def get_whatsapp_templates(current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))):
+    """Get all WhatsApp templates (Super Admin only)"""
+    templates = await db.whatsapp_templates.find({}, {"_id": 0}).to_list(100)
+    
+    # Convert datetime strings to datetime objects
+    for template in templates:
+        if isinstance(template.get('created_at'), str):
+            template['created_at'] = datetime.fromisoformat(template['created_at'])
+        if isinstance(template.get('updated_at'), str):
+            template['updated_at'] = datetime.fromisoformat(template['updated_at'])
+    
+    return templates
+
+@api_router.post("/whatsapp/templates", response_model=WhatsAppTemplateResponse)
+async def create_whatsapp_template(
+    template_data: WhatsAppTemplateCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Create or update a WhatsApp template for an event (Super Admin only)"""
+    
+    # Check if template already exists for this event
+    existing = await db.whatsapp_templates.find_one(
+        {"event_type": template_data.event_type.value},
+        {"_id": 0}
+    )
+    
+    if existing:
+        # Update existing template
+        update_data = {
+            "campaign_name": template_data.campaign_name,
+            "template_message": template_data.template_message,
+            "is_enabled": template_data.is_enabled,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        
+        await db.whatsapp_templates.update_one(
+            {"event_type": template_data.event_type.value},
+            {"$set": update_data}
+        )
+        
+        # Get updated template
+        template = await db.whatsapp_templates.find_one(
+            {"event_type": template_data.event_type.value},
+            {"_id": 0}
+        )
+    else:
+        # Create new template
+        template = WhatsAppTemplate(
+            event_type=template_data.event_type,
+            campaign_name=template_data.campaign_name,
+            template_message=template_data.template_message,
+            is_enabled=template_data.is_enabled
+        )
+        
+        template_doc = template.model_dump()
+        template_doc['created_at'] = template_doc['created_at'].isoformat()
+        template_doc['updated_at'] = template_doc['updated_at'].isoformat()
+        
+        await db.whatsapp_templates.insert_one(template_doc)
+        
+        # Fetch the inserted template as dict for consistent handling
+        template = await db.whatsapp_templates.find_one(
+            {"event_type": template_data.event_type.value},
+            {"_id": 0}
+        )
+    
+    # Convert datetime strings for response (template is now always a dict)
+    if isinstance(template.get('created_at'), str):
+        template['created_at'] = datetime.fromisoformat(template['created_at'])
+    if isinstance(template.get('updated_at'), str):
+        template['updated_at'] = datetime.fromisoformat(template['updated_at'])
+    
+    return WhatsAppTemplateResponse(**template)
+
+@api_router.patch("/whatsapp/templates/{event_type}")
+async def update_whatsapp_template(
+    event_type: WhatsAppTemplateEvent,
+    update_data: WhatsAppTemplateUpdate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Update a WhatsApp template (Super Admin only)"""
+    
+    template = await db.whatsapp_templates.find_one(
+        {"event_type": event_type.value},
+        {"_id": 0}
+    )
+    
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    update_fields = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    
+    if update_data.campaign_name is not None:
+        update_fields['campaign_name'] = update_data.campaign_name
+    if update_data.template_message is not None:
+        update_fields['template_message'] = update_data.template_message
+    if update_data.is_enabled is not None:
+        update_fields['is_enabled'] = update_data.is_enabled
+    
+    await db.whatsapp_templates.update_one(
+        {"event_type": event_type.value},
+        {"$set": update_fields}
+    )
+    
+    return {"message": "Template updated successfully"}
+
+@api_router.get("/whatsapp/logs")
+async def get_whatsapp_logs(
+    order_id: Optional[str] = None,
+    limit: int = 50,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get WhatsApp message logs (Super Admin only)"""
+    
+    query = {}
+    if order_id:
+        query['order_id'] = order_id
+    
+    logs = await db.whatsapp_logs.find(query, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
+    
+    # Convert datetime strings
+    for log in logs:
+        if isinstance(log.get('timestamp'), str):
+            log['timestamp'] = datetime.fromisoformat(log['timestamp'])
+    
+    return logs
+
+# ==================== MSG91 WHATSAPP CONFIGURATION ====================
+
+@api_router.get("/msg91/config")
+async def get_msg91_config(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get MSG91 configuration (Super Admin only)"""
+    config = await db.msg91_config.find_one({}, {"_id": 0})
+    
+    if not config:
+        return {"auth_key": "", "integrated_number": "", "is_active": False}
+    
+    # Convert datetime strings
+    if isinstance(config.get('created_at'), str):
+        config['created_at'] = datetime.fromisoformat(config['created_at'])
+    if isinstance(config.get('updated_at'), str):
+        config['updated_at'] = datetime.fromisoformat(config['updated_at'])
+    
+    return config
+
+@api_router.post("/msg91/config")
+async def create_or_update_msg91_config(
+    config_data: MSG91ConfigCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Create or update MSG91 configuration (Super Admin only)"""
+    
+    existing = await db.msg91_config.find_one({})
+    
+    if existing:
+        # Update existing
+        update_data = {
+            "auth_key": config_data.auth_key,
+            "integrated_number": config_data.integrated_number,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.msg91_config.update_one({}, {"$set": update_data})
+    else:
+        # Create new
+        config = MSG91Config(
+            auth_key=config_data.auth_key,
+            integrated_number=config_data.integrated_number
+        )
+        config_doc = config.model_dump()
+        config_doc['created_at'] = config_doc['created_at'].isoformat()
+        config_doc['updated_at'] = config_doc['updated_at'].isoformat()
+        await db.msg91_config.insert_one(config_doc)
+    
+    return {"message": "MSG91 configuration saved successfully"}
+
+@api_router.get("/msg91/templates")
+async def get_msg91_templates(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get all MSG91 templates (Super Admin only)"""
+    templates = await db.msg91_templates.find({}, {"_id": 0}).to_list(100)
+    
+    for template in templates:
+        if isinstance(template.get('created_at'), str):
+            template['created_at'] = datetime.fromisoformat(template['created_at'])
+        if isinstance(template.get('updated_at'), str):
+            template['updated_at'] = datetime.fromisoformat(template['updated_at'])
+    
+    return templates
+
+@api_router.post("/msg91/templates")
+async def create_or_update_msg91_template(
+    template_data: MSG91TemplateCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Create or update MSG91 template (Super Admin only)"""
+    
+    existing = await db.msg91_templates.find_one(
+        {"event_type": template_data.event_type.value},
+        {"_id": 0}
+    )
+    
+    if existing:
+        # Update existing
+        update_data = {
+            "template_name": template_data.template_name,
+            "namespace": template_data.namespace,
+            "language_code": template_data.language_code,
+            "language_policy": template_data.language_policy,
+            "variables": template_data.variables,
+            "is_enabled": template_data.is_enabled,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.msg91_templates.update_one(
+            {"event_type": template_data.event_type.value},
+            {"$set": update_data}
+        )
+    else:
+        # Create new
+        template = MSG91Template(
+            event_type=template_data.event_type,
+            template_name=template_data.template_name,
+            namespace=template_data.namespace,
+            language_code=template_data.language_code,
+            language_policy=template_data.language_policy,
+            variables=template_data.variables,
+            is_enabled=template_data.is_enabled
+        )
+        template_doc = template.model_dump()
+        template_doc['created_at'] = template_doc['created_at'].isoformat()
+        template_doc['updated_at'] = template_doc['updated_at'].isoformat()
+        await db.msg91_templates.insert_one(template_doc)
+    
+    return {"message": "MSG91 template saved successfully"}
+
+async def send_msg91_whatsapp(
+    order_id: str,
+    event_type: WhatsAppTemplateEvent
+) -> bool:
+    """Send WhatsApp notification via MSG91"""
+    try:
+        # Get MSG91 config
+        config = await db.msg91_config.find_one({}, {"_id": 0})
+        if not config or not config.get('is_active'):
+            logger.info("MSG91 is not configured or not active")
+            return False
+        
+        # Get template
+        template = await db.msg91_templates.find_one(
+            {"event_type": event_type.value},
+            {"_id": 0}
+        )
+        
+        if not template or not template.get('is_enabled'):
+            logger.info(f"MSG91 template for {event_type.value} not enabled")
+            return False
+        
+        # Get order details
+        order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        if not order:
+            logger.error(f"Order {order_id} not found")
+            return False
+        
+        # Extract customer info
+        customer_info = order.get('customer_info', {})
+        customer_name = customer_info.get('name', 'Customer')
+        customer_phone = customer_info.get('phone', '')
+        
+        # Validate phone - MSG91 expects format: country code + number (no +)
+        if not customer_phone:
+            logger.warning(f"No phone number for order {order_id}")
+            return False
+        
+        # Remove + if present
+        phone = customer_phone.replace('+', '').replace('-', '').replace(' ', '')
+        
+        # Prepare template variables
+        variable_values = {
+            "body_1": customer_name,
+            "body_2": order.get('order_number', order_id),
+            "body_3": order.get('delivery_date', 'N/A'),
+            "body_4": order.get('delivery_time', 'N/A')
+        }
+        
+        # Build components based on template variables
+        components = {}
+        for var in template.get('variables', []):
+            if var in variable_values:
+                components[var] = {
+                    "type": "text",
+                    "value": variable_values[var]
+                }
+        
+        # Prepare MSG91 payload
+        payload = {
+            "integrated_number": config['integrated_number'],
+            "content_type": "template",
+            "payload": {
+                "messaging_product": "whatsapp",
+                "type": "template",
+                "template": {
+                    "name": template['template_name'],
+                    "language": {
+                        "code": template.get('language_code', 'en'),
+                        "policy": template.get('language_policy', 'deterministic')
+                    },
+                    "namespace": template['namespace'],
+                    "to_and_components": [
+                        {
+                            "to": [phone],
+                            "components": components
+                        }
+                    ]
+                }
+            }
+        }
+        
+        # Send request to MSG91
+        headers = {
+            "Content-Type": "application/json",
+            "authkey": config['auth_key']
+        }
+        
+        response = requests.post(
+            "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk/",
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
+        
+        # Log the message
+        log = WhatsAppMessageLog(
+            order_id=order_id,
+            event_type=event_type,
+            recipient_phone=customer_phone,
+            recipient_name=customer_name,
+            campaign_name=template['template_name'],
+            status="sent" if response.status_code == 200 else "failed",
+            response_code=response.status_code,
+            response_message=response.text if response.status_code != 200 else "Success",
+            message_id=response.json().get('messageId') if response.status_code == 200 and response.text else None
+        )
+        
+        log_doc = log.model_dump()
+        log_doc['timestamp'] = log_doc['timestamp'].isoformat()
+        await db.whatsapp_logs.insert_one(log_doc)
+        
+        if response.status_code == 200:
+            logger.info(f"MSG91 WhatsApp sent for order {order_id}, event: {event_type.value}")
+            return True
+        else:
+            logger.warning(f"MSG91 WhatsApp failed: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error sending MSG91 WhatsApp for order {order_id}: {str(e)}")
+        return False
+
+# ==================== AISENSY WHATSAPP CONFIGURATION ====================
+
+@api_router.get("/aisensy/config")
+async def get_aisensy_config(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get AiSensy configuration (Super Admin only). API key is returned masked."""
+    config = await db.aisensy_config.find_one({}, {"_id": 0})
+    if not config:
+        return {
+            "api_key": "",
+            "api_key_masked": "",
+            "default_source": "crm",
+            "default_user_name": "US Bakers",
+            "is_active": False,
+            "configured": False
+        }
+    api_key = config.get('api_key', '')
+    # Mask the api_key in response (show only last 6 chars)
+    masked = ("•" * 12 + api_key[-6:]) if api_key else ""
+    return {
+        "api_key": "",  # never return plaintext to UI
+        "api_key_masked": masked,
+        "default_source": config.get('default_source', 'crm'),
+        "default_user_name": config.get('default_user_name', 'US Bakers'),
+        "is_active": config.get('is_active', True),
+        "configured": bool(api_key)
+    }
+
+@api_router.post("/aisensy/config")
+async def save_aisensy_config(
+    config_data: AisensyConfigCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Create or update AiSensy configuration (Super Admin only)"""
+    existing = await db.aisensy_config.find_one({})
+
+    now = datetime.now(timezone.utc).isoformat()
+    if existing:
+        update_data = {
+            "api_key": config_data.api_key,
+            "default_source": config_data.default_source or "crm",
+            "default_user_name": config_data.default_user_name or "US Bakers",
+            "is_active": True,
+            "updated_at": now
+        }
+        await db.aisensy_config.update_one({}, {"$set": update_data})
+    else:
+        config = AisensyConfig(
+            api_key=config_data.api_key,
+            default_source=config_data.default_source or "crm",
+            default_user_name=config_data.default_user_name or "US Bakers"
+        )
+        doc = config.model_dump()
+        doc['created_at'] = now
+        doc['updated_at'] = now
+        await db.aisensy_config.insert_one(doc)
+
+    return {"message": "AiSensy configuration saved successfully"}
+
+@api_router.get("/aisensy/templates")
+async def get_aisensy_templates(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get all AiSensy templates (Super Admin only)"""
+    templates = await db.aisensy_templates.find({}, {"_id": 0}).to_list(100)
+    return templates
+
+@api_router.post("/aisensy/templates")
+async def save_aisensy_template(
+    template_data: AisensyTemplateCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Create or update an AiSensy template (Super Admin only)"""
+    existing = await db.aisensy_templates.find_one({"event_type": template_data.event_type.value})
+    now = datetime.now(timezone.utc).isoformat()
+
+    if existing:
+        update_data = {
+            "campaign_name": template_data.campaign_name,
+            "updated_at": now
+        }
+        if template_data.template_params is not None:
+            update_data["template_params"] = template_data.template_params
+        if template_data.tags is not None:
+            update_data["tags"] = template_data.tags
+        if template_data.is_enabled is not None:
+            update_data["is_enabled"] = template_data.is_enabled
+        await db.aisensy_templates.update_one(
+            {"event_type": template_data.event_type.value},
+            {"$set": update_data}
+        )
+    else:
+        template = AisensyTemplate(
+            event_type=template_data.event_type,
+            campaign_name=template_data.campaign_name,
+            template_params=template_data.template_params or [
+                "customer_name", "order_number", "delivery_date", "delivery_time"
+            ],
+            tags=template_data.tags or [],
+            is_enabled=template_data.is_enabled if template_data.is_enabled is not None else False
+        )
+        doc = template.model_dump()
+        doc['created_at'] = now
+        doc['updated_at'] = now
+        await db.aisensy_templates.insert_one(doc)
+
+    return {"message": "AiSensy template saved successfully"}
+
+@api_router.get("/aisensy/logs")
+async def get_aisensy_logs(
+    limit: int = 200,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get recent AiSensy message logs (Super Admin only)"""
+    logs = await db.whatsapp_logs.find({"provider": "aisensy"}, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
+    return logs
+
+
+def _normalize_phone_for_aisensy(phone: str) -> str:
+    """Normalize Indian phone numbers to '+91XXXXXXXXXX' for AiSensy.
+    AiSensy treats unresolved numbers as Indian by default but we send + prefixed
+    international format to be safe."""
+    if not phone:
+        return phone
+    p = str(phone).strip().replace(' ', '').replace('-', '')
+    if p.startswith('+'):
+        return p
+    # If 10-digit, assume Indian
+    if len(p) == 10 and p.isdigit():
+        return f"+91{p}"
+    # If 12-digit starting with 91, assume already country code
+    if len(p) == 12 and p.startswith('91') and p.isdigit():
+        return f"+{p}"
+    # Fallback: return as-is with + prefix if it's all digits
+    if p.isdigit():
+        return f"+{p}"
+    return p
+
+
+async def send_aisensy_whatsapp(order_id: str, event_type: WhatsAppTemplateEvent) -> bool:
+    """Send a WhatsApp notification via AiSensy for an order event.
+
+    Looks up the AiSensy config + event template, builds the templateParams
+    array from the configured ordered keys, and posts to the AiSensy campaign API.
+    All attempts are logged in whatsapp_logs with provider='aisensy'.
+    """
+    try:
+        config = await db.aisensy_config.find_one({}, {"_id": 0})
+        if not config or not config.get('is_active') or not config.get('api_key'):
+            logger.info("AiSensy is not configured or not active; skipping send.")
+            return False
+
+        template = await db.aisensy_templates.find_one(
+            {"event_type": event_type.value}, {"_id": 0}
+        )
+        if not template or not template.get('is_enabled') or not template.get('campaign_name'):
+            logger.info(f"AiSensy template for {event_type.value} not enabled or missing campaign_name")
+            return False
+
+        order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+        if not order:
+            logger.error(f"Order {order_id} not found for AiSensy send")
+            return False
+
+        customer_info = order.get('customer_info', {}) or {}
+        customer_name = customer_info.get('name', 'Customer')
+        customer_phone = customer_info.get('phone', '')
+        if not customer_phone:
+            logger.warning(f"No phone number for order {order_id}; skipping AiSensy send")
+            return False
+
+        destination = _normalize_phone_for_aisensy(customer_phone)
+
+        # Resolve outlet name (optional in templates)
+        outlet_name = ""
+        if order.get('outlet_id'):
+            outlet_doc = await db.outlets.find_one({"id": order['outlet_id']}, {"_id": 0, "name": 1})
+            if outlet_doc:
+                outlet_name = outlet_doc.get('name', '')
+
+        # Build the value map used by template_params keys
+        value_map = {
+            "customer_name": customer_name,
+            "order_number": str(order.get('order_number') or order_id),
+            "delivery_date": str(order.get('delivery_date') or 'N/A'),
+            "delivery_time": str(order.get('delivery_time') or 'N/A'),
+            "total_amount": f"{float(order.get('total_amount') or 0):.2f}",
+            "pending_amount": f"{float(order.get('pending_amount') or 0):.2f}",
+            "paid_amount": f"{float(order.get('paid_amount') or 0):.2f}",
+            "outlet_name": outlet_name,
+            "flavour": str(order.get('flavour') or ''),
+            "occasion": str(order.get('occasion') or ''),
+        }
+        param_keys: List[str] = template.get('template_params') or [
+            "customer_name", "order_number", "delivery_date", "delivery_time"
+        ]
+        template_params = [value_map.get(k, "") for k in param_keys]
+
+        payload = {
+            "apiKey": config['api_key'],
+            "campaignName": template['campaign_name'],
+            "destination": destination,
+            "userName": config.get('default_user_name') or customer_name,
+            "source": config.get('default_source') or "crm",
+            "templateParams": template_params,
+            "tags": template.get('tags') or [],
+            "attributes": {}
+        }
+
+        try:
+            response = requests.post(
+                "https://backend.aisensy.com/campaign/t1/api/v2",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+            status_ok = 200 <= response.status_code < 300
+        except Exception as http_err:
+            logger.error(f"AiSensy HTTP error for order {order_id}: {http_err}")
+            status_ok = False
+            response = None
+
+        # Log attempt
+        log_doc = {
+            "id": str(uuid.uuid4()),
+            "provider": "aisensy",
+            "order_id": order_id,
+            "event_type": event_type.value,
+            "recipient_phone": customer_phone,
+            "recipient_name": customer_name,
+            "campaign_name": template['campaign_name'],
+            "destination": destination,
+            "template_params": template_params,
+            "status": "sent" if status_ok else "failed",
+            "response_code": response.status_code if response is not None else 0,
+            "response_message": (response.text[:1000] if response is not None else "no response"),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        await db.whatsapp_logs.insert_one(log_doc)
+
+        if status_ok:
+            logger.info(f"AiSensy WhatsApp sent for order {order_id}, event: {event_type.value}")
+            return True
+        else:
+            logger.warning(f"AiSensy WhatsApp failed for order {order_id}: {log_doc['response_code']} - {log_doc['response_message']}")
+            return False
+    except Exception as e:
+        logger.error(f"Error sending AiSensy WhatsApp for order {order_id}: {str(e)}")
+        return False
+
+
+async def send_whatsapp_notification(order_id: str, event_type: WhatsAppTemplateEvent) -> bool:
+    """Unified WhatsApp dispatcher. Prefers AiSensy when configured, else falls back to MSG91."""
+    try:
+        aisensy_cfg = await db.aisensy_config.find_one({}, {"_id": 0})
+        if aisensy_cfg and aisensy_cfg.get('is_active') and aisensy_cfg.get('api_key'):
+            return await send_aisensy_whatsapp(order_id, event_type)
+    except Exception as e:
+        logger.error(f"AiSensy check failed, falling back to MSG91: {e}")
+    # Fallback to MSG91 (legacy)
+    return await send_msg91_whatsapp(order_id, event_type)
+
+
+
+# ==================== INITIALIZE SUPER ADMIN ====================
+
+@app.on_event("startup")
+async def create_super_admin():
+    """Create default super admin if not exists"""
+    existing_admin = await db.users.find_one({"role": UserRole.SUPER_ADMIN.value})
+    
+    if not existing_admin:
+        super_admin = User(
+            email="admin@usbakers.com",
+            name="Super Admin",
+            phone="1234567890",
+            role=UserRole.SUPER_ADMIN,
+            password_hash=get_password_hash("admin123"),
+            is_active=True
+        )
+        
+        doc = super_admin.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        
+        await db.users.insert_one(doc)
+        logger.info("✅ Super Admin created - Email: admin@usbakers.com, Password: admin123")
+
+@app.on_event("startup")
+async def seed_change_log():
+    """Seed initial changelog entries for features added."""
+    existing = await db.change_log.count_documents({})
+    if existing > 0:
+        return
+    seed_entries = [
+        {"title": "Pending Orders: Show 'Order taken by'", "description": "Each pending order card now displays the sales person who took the order.", "category": "feature"},
+        {"title": "Post-photo actions on ready orders", "description": "After uploading cake photo, counter can choose: Assign Delivery / Transfer to another Outlet / Customer Pickup at outlet.", "category": "feature"},
+        {"title": "Credit orders auto-release on 100% payment", "description": "Credit orders marked 'Needs Payment' are automatically removed from credit list and become normal orders once full payment is synced from PetPooja.", "category": "feature"},
+        {"title": "User outlet scope: All / Multiple / Specific", "description": "When creating a user, super admin can assign access to ALL outlets, multiple specific outlets, or a single outlet.", "category": "feature"},
+        {"title": "Kitchen dashboard streamlined", "description": "Removed text instructions (voice-only), shows order taker name instead of ID, cake thumbnail in sidebar, Hold & Start Another button, ready orders pinned to bottom.", "category": "improvement"},
+        {"title": "Incentive gated by image upload", "description": "Sales person incentive is calculated only after the actual cake photo has been uploaded, confirming fulfillment.", "category": "improvement"},
+        {"title": "Super Admin → Changes Log tab", "description": "New page under Super Admin showing all feature changes, bug fixes and improvements made to the app.", "category": "feature"},
+        {"title": "Logout reliability fix", "description": "Logout now forces a full redirect to /login, clearing any cached auth state across routes.", "category": "bugfix"},
+    ]
+    now = datetime.now(timezone.utc).isoformat()
+    docs = [{"id": str(uuid.uuid4()), **e, "created_at": now, "created_by": None} for e in seed_entries]
+    await db.change_log.insert_many(docs)
+    logger.info(f"✅ Seeded {len(docs)} change log entries")
+
+# ==================== HEALTH CHECK ====================
+
+# ==================== PERMISSION MANAGEMENT ====================
+
+def get_default_role_permissions(role: str) -> List[str]:
+    """Get default permissions for a role"""
+    defaults = {
+        "super_admin": [
+            "can_create_order", "can_view_orders", "can_edit_orders", "can_delete_orders", "can_mark_ready",
+            "can_edit_customer_info", "can_edit_flavour", "can_edit_size", "can_edit_delivery_date",
+            "can_edit_delivery_time", "can_edit_total_amount", "can_edit_special_instructions",
+            "can_edit_cake_image", "can_edit_name_on_cake",
+            "can_record_payment", "can_view_payments", "can_refund",
+            "can_manage_outlets", "can_manage_zones", "can_manage_users", "can_view_reports", "can_manage_settings",
+            "can_assign_delivery", "can_view_delivery_orders", "can_mark_delivered"
+        ],
+        "outlet_admin": [
+            "can_create_order", "can_view_orders", "can_edit_orders",
+            "can_edit_customer_info", "can_edit_flavour", "can_edit_size",
+            "can_edit_delivery_date", "can_edit_delivery_time", "can_edit_special_instructions",
+            "can_edit_cake_image", "can_edit_name_on_cake",
+            "can_record_payment", "can_view_payments",
+            "can_view_reports", "can_assign_delivery"
+        ],
+        "order_manager": [
+            "can_create_order", "can_view_orders", "can_edit_orders",
+            "can_edit_customer_info", "can_edit_flavour", "can_edit_size",
+            "can_edit_delivery_date", "can_edit_delivery_time", "can_edit_special_instructions",
+            "can_view_payments"
+        ],
+        "kitchen": ["can_view_orders", "can_mark_ready"],
+        "delivery": ["can_view_delivery_orders", "can_mark_delivered"],
+        "accounts": [
+            "can_view_orders", "can_record_payment", "can_view_payments",
+            "can_refund", "can_view_reports"
+        ]
+    }
+    return defaults.get(role, [])
+
+@api_router.get("/permissions/available")
+async def get_available_permissions(current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))):
+    """Get all available permissions"""
+    return {
+        "permissions": AVAILABLE_PERMISSIONS,
+        "roles": [role.value for role in UserRole]
+    }
+
+@api_router.get("/permissions/roles")
+async def get_all_role_permissions(current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))):
+    """Get all role permission templates"""
+    templates = await db.role_permissions.find({}, {"_id": 0}).to_list(100)
+    
+    # If no templates, return defaults
+    if not templates:
+        templates = []
+        for role in UserRole:
+            templates.append({
+                "role": role.value,
+                "permissions": get_default_role_permissions(role.value),
+                "description": f"Default permissions for {role.value}",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_by": "system"
+            })
+    
+    return {"role_permissions": templates}
+
+@api_router.get("/permissions/roles/{role}")
+async def get_role_permissions(role: str, current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))):
+    """Get permissions for a specific role"""
+    template = await db.role_permissions.find_one({"role": role}, {"_id": 0})
+    
+    if not template:
+        template = {
+            "role": role,
+            "permissions": get_default_role_permissions(role),
+            "description": f"Default permissions for {role}"
+        }
+    
+    return template
+
+class UpdateRolePermissionsRequest(BaseModel):
+    role: str
+    permissions: List[str]
+
+@api_router.post("/permissions/roles")
+async def update_role_permissions(
+    request: UpdateRolePermissionsRequest,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Update permissions for a role"""
+    # Validate permissions
+    all_permissions = []
+    for category in AVAILABLE_PERMISSIONS.values():
+        all_permissions.extend(category.keys())
+    
+    invalid = [p for p in request.permissions if p not in all_permissions]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid permissions: {', '.join(invalid)}")
+    
+    template = {
+        "role": request.role,
+        "permissions": request.permissions,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": current_user.id
+    }
+    
+    await db.role_permissions.update_one(
+        {"role": request.role},
+        {"$set": template},
+        upsert=True
+    )
+    
+    return {"message": f"Permissions updated for {request.role}", "template": template}
+
+@api_router.post("/permissions/apply-to-existing-users/{role}")
+async def apply_permissions_to_existing_users(
+    role: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Apply role permissions to all existing users with that role"""
+    template = await db.role_permissions.find_one({"role": role})
+    if not template:
+        template = {
+            "permissions": get_default_role_permissions(role)
+        }
+    
+    result = await db.users.update_many(
+        {"role": role},
+        {"$set": {"permissions": template["permissions"]}}
+    )
+    
+    return {
+        "message": f"Applied permissions to {result.modified_count} users",
+        "role": role,
+        "modified_count": result.modified_count
+    }
+
+
+
+
+@api_router.post("/upload-voice")
+async def upload_voice_instruction(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    """Upload voice instruction audio file"""
+    try:
+        # Create voice instructions directory
+        voice_dir = ROOT_DIR / "uploads" / "voice-instructions"
+        voice_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate unique filename
+        file_ext = file.filename.split('.')[-1] if '.' in file.filename else 'webm'
+        unique_filename = f"voice_{uuid.uuid4()}.{file_ext}"
+        file_path = voice_dir / unique_filename
+        
+        # Save file
+        with open(file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+        
+        # Return URL
+        file_url = f"/api/uploads/voice-instructions/{unique_filename}"
+        return {"file_url": file_url, "message": "Voice instruction uploaded successfully"}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@api_router.get("/health")
+async def health_check():
+    return {"status": "healthy", "service": "US Bakers CRM"}
+
+# ==================== ORDER ENRICHMENT HELPER ====================
+
+async def enrich_orders_with_names(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Add order_taken_by_name by resolving from sales_persons or users collection."""
+    if not orders:
+        return orders
+    taken_ids = list({o.get('order_taken_by') for o in orders if o.get('order_taken_by')})
+    if not taken_ids:
+        return orders
+    name_map: Dict[str, str] = {}
+    sps = await db.sales_persons.find({"id": {"$in": taken_ids}}, {"_id": 0, "id": 1, "name": 1}).to_list(1000)
+    for sp in sps:
+        name_map[sp['id']] = sp['name']
+    missing = [tid for tid in taken_ids if tid not in name_map]
+    if missing:
+        users = await db.users.find({"id": {"$in": missing}}, {"_id": 0, "id": 1, "name": 1}).to_list(1000)
+        for u in users:
+            name_map[u['id']] = u['name']
+    for o in orders:
+        tid = o.get('order_taken_by')
+        if tid and tid in name_map:
+            o['order_taken_by_name'] = name_map[tid]
+        elif tid:
+            o['order_taken_by_name'] = tid  # fallback
+    return orders
+
+# ==================== KITCHEN: PAUSE / RESUME ORDER ====================
+
+@api_router.post("/orders/{order_id}/pause-preparing")
+async def pause_preparing_order(
+    order_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.KITCHEN, UserRole.FACTORY_MANAGER]))
+):
+    """Kitchen can pause (un-start) a preparing order to work on another first."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.get('status') != 'in_progress':
+        raise HTTPException(status_code=400, detail="Order is not in preparing state")
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {"status": "confirmed", "updated_at": datetime.now(timezone.utc).isoformat()}}
+    )
+    return {"message": "Order paused - returned to waiting queue"}
+
+# ==================== TRANSFER TO OUTLET (after ready to deliver) ====================
+
+@api_router.post("/orders/{order_id}/transfer-outlet")
+async def transfer_order_to_outlet(
+    order_id: str,
+    outlet_id: str,
+    pickup_by_customer: bool = False,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER, UserRole.FACTORY_MANAGER, UserRole.KITCHEN]))
+):
+    """Transfer a ready order to a specific outlet (and optionally mark for customer pickup)."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    outlet = await db.outlets.find_one({"id": outlet_id}, {"_id": 0})
+    if not outlet:
+        raise HTTPException(status_code=404, detail="Outlet not found")
+    update_data = {
+        "transfer_to_outlet_id": outlet_id,
+        "pickup_by_customer": pickup_by_customer,
+        "needs_delivery": not pickup_by_customer,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.orders.update_one({"id": order_id}, {"$set": update_data})
+    return {"message": f"Order transferred to {outlet.get('name')}", "pickup_by_customer": pickup_by_customer}
+
+# ==================== CHANGE LOG (Super Admin changelog feed) ====================
+
+class ChangeLogEntry(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    title: str
+    description: str
+    category: str = "feature"  # feature | bugfix | improvement
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_by: Optional[str] = None
+
+class ChangeLogCreate(BaseModel):
+    title: str
+    description: str
+    category: str = "feature"
+
+@api_router.get("/change-log")
+async def get_change_log(current_user: User = Depends(get_current_user)):
+    items = await db.change_log.find({}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return items
+
+@api_router.post("/change-log")
+async def add_change_log(
+    entry: ChangeLogCreate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    doc = ChangeLogEntry(
+        title=entry.title,
+        description=entry.description,
+        category=entry.category,
+        created_by=current_user.id
+    ).model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.change_log.insert_one(doc)
+    doc.pop('_id', None)
+    return {"message": "Change logged", "entry": doc}
+
+@api_router.delete("/change-log/{entry_id}")
+async def delete_change_log(
+    entry_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    await db.change_log.delete_one({"id": entry_id})
+    return {"message": "Deleted"}
+
+# Include the router in the main app
+# (Moved to bottom of file to register routes defined later, e.g. /activity-logs)
+
+# Serve uploaded images
+app.mount("/api/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()
+
+# ==================== ACTIVITY LOGS ====================
+
+class ActivityLog(BaseModel):
+    """Comprehensive activity logging for all CRM actions"""
+    model_config = ConfigDict(extra="ignore")
+    
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    user_id: str
+    user_name: str
+    user_role: str
+    action_type: str  # order_created, order_updated, order_deleted, payment_recorded, status_changed, user_created, login, etc.
+    description: str  # Human-readable description
+    entity_type: Optional[str] = None  # order, user, outlet, payment, etc.
+    entity_id: Optional[str] = None  # ID of the affected entity
+    order_number: Optional[str] = None  # For order-related actions
+    outlet_id: Optional[str] = None
+    outlet_name: Optional[str] = None
+    ip_address: Optional[str] = None
+    before_data: Optional[Dict[str, Any]] = None  # State before change
+    after_data: Optional[Dict[str, Any]] = None  # State after change
+    metadata: Optional[Dict[str, Any]] = None  # Additional context
+
+# Helper function to create activity log
+async def create_activity_log(
+    user: User,
+    action_type: str,
+    description: str,
+    entity_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    order_number: Optional[str] = None,
+    outlet_id: Optional[str] = None,
+    before_data: Optional[Dict] = None,
+    after_data: Optional[Dict] = None,
+    metadata: Optional[Dict] = None,
+    ip_address: Optional[str] = None
+):
+    """Create an activity log entry"""
+    
+    outlet_name = None
+    if outlet_id:
+        outlet_doc = await db.outlets.find_one({"id": outlet_id}, {"_id": 0})
+        if outlet_doc:
+            outlet_name = outlet_doc.get('name')
+    
+    log = ActivityLog(
+        user_id=user.id,
+        user_name=user.name,
+        user_role=user.role.value,
+        action_type=action_type,
+        description=description,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        order_number=order_number,
+        outlet_id=outlet_id,
+        outlet_name=outlet_name,
+        ip_address=ip_address,
+        before_data=before_data,
+        after_data=after_data,
+        metadata=metadata
+    )
+    
+    log_dict = log.model_dump()
+    log_dict['timestamp'] = log_dict['timestamp'].isoformat()
+    
+    await db.activity_logs.insert_one(log_dict)
+    logger.info(f"Activity Log: {user.name} ({user.role}) - {description}")
+
+@api_router.get("/activity-logs")
+async def get_activity_logs(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    user_id: Optional[str] = None,
+    action_type: Optional[str] = None,
+    outlet_id: Optional[str] = None,
+    limit: int = 1000,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Get activity logs with filters (Super Admin only)"""
+    
+    query = {}
+    
+    if date_from:
+        try:
+            from_date = datetime.fromisoformat(date_from)
+            query['timestamp'] = {"$gte": from_date.isoformat()}
+        except:
+            pass
+    
+    if date_to:
+        try:
+            to_date = datetime.fromisoformat(date_to + 'T23:59:59')
+            if 'timestamp' in query:
+                query['timestamp']['$lte'] = to_date.isoformat()
+            else:
+                query['timestamp'] = {"$lte": to_date.isoformat()}
+        except:
+            pass
+    
+    if user_id:
+        query['user_id'] = user_id
+    
+    if action_type:
+        query['action_type'] = action_type
+    
+    if outlet_id:
+        query['outlet_id'] = outlet_id
+    
+    logs = await db.activity_logs.find(query, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
+    
+    return logs
+
+
+# Register the api router AFTER all routes are defined
+app.include_router(api_router)

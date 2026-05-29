@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>US Bakers - Kitchen TV Display</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: #0a0a0a; color: #fff; font-family: Arial, Helvetica, sans-serif; overflow: hidden; }
+.app { height: 100vh; display: flex; flex-direction: column; }
+.header { background: #e92587; padding: 16px 32px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+.brand { display: flex; align-items: center; gap: 16px; }
+.brand img { height: 56px; width: 56px; border-radius: 50%; background: #fff; object-fit: contain; padding: 4px; }
+.brand-text { display: flex; flex-direction: column; }
+.brand-title { font-size: 28px; font-weight: 700; color: #fff; letter-spacing: 1px; }
+.brand-subtitle { font-size: 14px; color: rgba(255,255,255,0.85); }
+.clock { font-size: 32px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.status-bar { padding: 8px 32px; background: #1a1a1a; font-size: 14px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2a2a2a; }
+.status-bar .meta { color: #aaa; }
+.status-bar .ok { color: #4ade80; }
+.status-bar .err { color: #ef4444; }
+.login-screen { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.login-card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 16px; padding: 48px; max-width: 480px; width: 100%; text-align: center; }
+.login-card h1 { font-size: 28px; margin-bottom: 8px; color: #e92587; }
+.login-card p { color: #999; margin-bottom: 32px; font-size: 16px; }
+.login-card label { display: block; text-align: left; font-size: 14px; color: #ccc; margin-bottom: 6px; margin-top: 16px; }
+.login-card input { width: 100%; padding: 14px 16px; font-size: 18px; background: #0a0a0a; border: 1px solid #333; border-radius: 8px; color: #fff; outline: none; }
+.login-card input:focus { border-color: #e92587; }
+.login-card .err-msg { color: #ef4444; font-size: 14px; margin-top: 16px; min-height: 20px; }
+.login-card button { width: 100%; padding: 16px; font-size: 18px; font-weight: 600; background: #e92587; color: #fff; border: 0; border-radius: 8px; cursor: pointer; margin-top: 24px; }
+.login-card button:disabled { opacity: 0.6; cursor: not-allowed; }
+.dashboard { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.summary { padding: 16px 32px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; background: #111; border-bottom: 1px solid #2a2a2a; }
+.summary-card { background: #1a1a1a; border-left: 4px solid #888; padding: 16px; border-radius: 8px; }
+.summary-card.confirmed { border-left-color: #3b82f6; }
+.summary-card.in_progress { border-left-color: #f59e0b; }
+.summary-card.ready { border-left-color: #22c55e; }
+.summary-card.total { border-left-color: #e92587; }
+.summary-card .lbl { font-size: 13px; color: #aaa; text-transform: uppercase; letter-spacing: 1px; }
+.summary-card .val { font-size: 36px; font-weight: 700; margin-top: 4px; }
+.orders-area { flex: 1; padding: 24px 32px; overflow-y: auto; }
+.orders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px; }
+.order-card { background: #1a1a1a; border: 1px solid #2a2a2a; border-left: 6px solid #888; border-radius: 12px; padding: 16px; }
+.order-card.confirmed { border-left-color: #3b82f6; }
+.order-card.in_progress { border-left-color: #f59e0b; background: #2a1f0a; }
+.order-card.ready { border-left-color: #22c55e; opacity: 0.7; }
+.order-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+.order-num { font-size: 22px; font-weight: 700; color: #fff; }
+.order-status { font-size: 11px; padding: 4px 10px; border-radius: 999px; text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; }
+.order-status.confirmed { background: #1e3a8a; color: #93c5fd; }
+.order-status.in_progress { background: #78350f; color: #fcd34d; }
+.order-status.ready { background: #14532d; color: #86efac; }
+.order-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 14px; }
+.order-row .lbl { color: #888; }
+.order-row .val { color: #fff; font-weight: 500; text-align: right; max-width: 220px; word-break: break-word; }
+.order-deadline { margin-top: 10px; padding: 8px 12px; background: #0a0a0a; border-radius: 6px; font-size: 14px; color: #fbbf24; font-weight: 600; text-align: center; }
+.empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; color: #666; gap: 12px; }
+.empty-icon { font-size: 64px; }
+.spinner { display: inline-block; width: 18px; height: 18px; border: 3px solid rgba(255,255,255,0.2); border-top-color: #e92587; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 8px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 800px) {
+  .summary { grid-template-columns: repeat(2, 1fr); padding: 12px 16px; }
+  .header { padding: 12px 16px; }
+  .brand-title { font-size: 20px; }
+  .clock { font-size: 22px; }
+  .orders-area { padding: 16px; }
+}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="header">
+    <div class="brand">
+      <img src="/us-bakers-logo.jpg" alt="US Bakers" id="brandLogo">
+      <div class="brand-text">
+        <div class="brand-title">US BAKERS</div>
+        <div class="brand-subtitle">Kitchen Display System</div>
+      </div>
+    </div>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+
+  <div class="status-bar">
+    <div class="meta" id="dateLine">Loading...</div>
+    <div id="connStatus" class="ok">Connected</div>
+  </div>
+
+  <div id="screen"></div>
+</div>
+
+<script>
+(function () {
+  var BACKEND_URL = window.location.protocol + '//' + window.location.host;
+  // If running behind a proxy that routes /api -> backend, this is correct.
+  // Otherwise the user sets ?api= in URL.
+  var qs = function (k) {
+    var match = window.location.search.match(new RegExp('[?&]' + k + '=([^&]*)'));
+    return match ? decodeURIComponent(match[1]) : null;
+  };
+  var customApi = qs('api');
+  if (customApi) BACKEND_URL = customApi;
+  var API = BACKEND_URL + '/api';
+
+  var token = null;
+  try { token = localStorage.getItem('token'); } catch (e) {}
+
+  var screen = document.getElementById('screen');
+  var connEl = document.getElementById('connStatus');
+  var dateLineEl = document.getElementById('dateLine');
+  var clockEl = document.getElementById('clock');
+
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+  function tickClock() {
+    var d = new Date();
+    clockEl.innerHTML = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    var days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    dateLineEl.innerHTML = days[d.getDay()] + ', ' + d.getDate() + ' ' + months[d.getMonth()] + ' ' + d.getFullYear();
+  }
+  setInterval(tickClock, 1000);
+  tickClock();
+
+  function setConn(ok, msg) {
+    connEl.className = ok ? 'ok' : 'err';
+    connEl.innerHTML = msg || (ok ? 'Connected' : 'Disconnected');
+  }
+
+  // Tiny XHR wrapper (works on every browser back to IE7)
+  function request(method, url, body, cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open(method, url, true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      var data = null;
+      try { data = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch (e) {}
+      cb(xhr.status, data);
+    };
+    xhr.send(body ? JSON.stringify(body) : null);
+  }
+
+  function escapeHtml(s) {
+    if (s === null || s === undefined) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ---- LOGIN SCREEN ----
+  function showLogin(errorMsg) {
+    screen.innerHTML =
+      '<div class="login-screen">' +
+        '<div class="login-card">' +
+          '<h1>US Bakers</h1>' +
+          '<p>Kitchen TV Display Login</p>' +
+          '<label>Email</label>' +
+          '<input id="lEmail" type="email" autocomplete="username" placeholder="kitchen@usbakers.com">' +
+          '<label>Password</label>' +
+          '<input id="lPass" type="password" autocomplete="current-password">' +
+          '<div class="err-msg" id="lErr">' + (errorMsg || '') + '</div>' +
+          '<button id="lBtn">Login</button>' +
+        '</div>' +
+      '</div>';
+
+    var emailEl = document.getElementById('lEmail');
+    var passEl = document.getElementById('lPass');
+    var btn = document.getElementById('lBtn');
+    var errEl = document.getElementById('lErr');
+
+    function doLogin() {
+      var email = emailEl.value.trim();
+      var pass = passEl.value;
+      if (!email || !pass) { errEl.innerHTML = 'Email and password required'; return; }
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Logging in...';
+      errEl.innerHTML = '';
+      request('POST', API + '/auth/login', { email: email, password: pass }, function (status, data) {
+        btn.disabled = false;
+        btn.innerHTML = 'Login';
+        if (status === 200 && data && data.access_token) {
+          token = data.access_token;
+          try { localStorage.setItem('token', token); } catch (e) {}
+          startDashboard();
+        } else {
+          var msg = (data && (data.detail || data.message)) || ('Login failed (HTTP ' + status + ')');
+          errEl.innerHTML = msg;
+        }
+      });
+    }
+
+    btn.onclick = doLogin;
+    passEl.onkeydown = function (e) { if (e.keyCode === 13) doLogin(); };
+    emailEl.focus();
+  }
+
+  // ---- DASHBOARD ----
+  function startDashboard() {
+    screen.innerHTML =
+      '<div class="dashboard">' +
+        '<div class="summary">' +
+          '<div class="summary-card confirmed"><div class="lbl">Waiting</div><div class="val" id="cConfirmed">0</div></div>' +
+          '<div class="summary-card in_progress"><div class="lbl">In Progress</div><div class="val" id="cInProgress">0</div></div>' +
+          '<div class="summary-card ready"><div class="lbl">Ready</div><div class="val" id="cReady">0</div></div>' +
+          '<div class="summary-card total"><div class="lbl">Total Today</div><div class="val" id="cTotal">0</div></div>' +
+        '</div>' +
+        '<div class="orders-area"><div id="ordersWrap"><div class="empty"><div class="empty-icon">⏳</div><div>Loading orders...</div></div></div></div>' +
+      '</div>';
+    refreshOrders();
+    setInterval(refreshOrders, 15000);
+  }
+
+  function statusLabel(s) {
+    if (s === 'confirmed') return 'Waiting';
+    if (s === 'in_progress') return 'In Progress';
+    if (s === 'ready') return 'Ready';
+    if (s === 'ready_to_deliver') return 'Ready to Deliver';
+    return s || '-';
+  }
+
+  function refreshOrders() {
+    request('GET', API + '/kitchen/orders', null, function (status, data) {
+      if (status === 401 || status === 403) {
+        try { localStorage.removeItem('token'); } catch (e) {}
+        token = null;
+        showLogin('Session expired. Please log in again.');
+        return;
+      }
+      if (status !== 200 || !data) {
+        setConn(false, 'Connection error (HTTP ' + status + ')');
+        return;
+      }
+      setConn(true, 'Connected · ' + data.length + ' active');
+      renderOrders(data);
+    });
+  }
+
+  function renderOrders(orders) {
+    var counts = { confirmed: 0, in_progress: 0, ready: 0, total: orders.length };
+    var html = '';
+    if (!orders.length) {
+      html = '<div class="empty"><div class="empty-icon">🎂</div><div>No active orders</div></div>';
+    } else {
+      html = '<div class="orders-grid">';
+      for (var i = 0; i < orders.length; i++) {
+        var o = orders[i];
+        if (o.status === 'confirmed') counts.confirmed++;
+        else if (o.status === 'in_progress') counts.in_progress++;
+        else if (o.status === 'ready' || o.status === 'ready_to_deliver') counts.ready++;
+        var customer = (o.customer_info && o.customer_info.name) || '-';
+        var phone = (o.customer_info && o.customer_info.phone) || '';
+        var deadline = o.kitchen_ready_deadline ? o.kitchen_ready_deadline.split(' ')[1] : '';
+        html +=
+          '<div class="order-card ' + escapeHtml(o.status) + '">' +
+            '<div class="order-head">' +
+              '<div class="order-num">#' + escapeHtml(o.order_number || '') + '</div>' +
+              '<div class="order-status ' + escapeHtml(o.status) + '">' + escapeHtml(statusLabel(o.status)) + '</div>' +
+            '</div>' +
+            '<div class="order-row"><span class="lbl">Customer:</span><span class="val">' + escapeHtml(customer) + '</span></div>' +
+            (phone ? '<div class="order-row"><span class="lbl">Phone:</span><span class="val">' + escapeHtml(phone) + '</span></div>' : '') +
+            '<div class="order-row"><span class="lbl">Flavour:</span><span class="val">' + escapeHtml(o.flavour || '-') + '</span></div>' +
+            '<div class="order-row"><span class="lbl">Size:</span><span class="val">' + escapeHtml((o.size_pounds || '-') + ' lb') + '</span></div>' +
+            '<div class="order-row"><span class="lbl">Occasion:</span><span class="val">' + escapeHtml(o.occasion || '-') + '</span></div>' +
+            (o.name_on_cake ? '<div class="order-row"><span class="lbl">Name on cake:</span><span class="val">' + escapeHtml(o.name_on_cake) + '</span></div>' : '') +
+            '<div class="order-row"><span class="lbl">Delivery:</span><span class="val">' + escapeHtml((o.delivery_date || '-') + ' ' + (o.delivery_time || '')) + '</span></div>' +
+            (deadline ? '<div class="order-deadline">⏰ Ready by ' + escapeHtml(deadline) + '</div>' : '') +
+          '</div>';
+      }
+      html += '</div>';
+    }
+    document.getElementById('ordersWrap').innerHTML = html;
+    document.getElementById('cConfirmed').innerHTML = counts.confirmed;
+    document.getElementById('cInProgress').innerHTML = counts.in_progress;
+    document.getElementById('cReady').innerHTML = counts.ready;
+    document.getElementById('cTotal').innerHTML = counts.total;
+  }
+
+  // BOOT
+  if (token) {
+    startDashboard();
+  } else {
+    showLogin();
+  }
+})();
+</script>
+</body>
+</html>

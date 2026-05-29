@@ -1,0 +1,71 @@
+{
+  "summary": "Frontend-only login & related regression testing for US Bakers India app. All 6 role logins work end-to-end with correct redirects and proper error handling for bad credentials. TV-kitchen static page works. Sidebar collapse reflows main content correctly. Activity Logs page is free of Radix Select empty-value errors. ONE CRITICAL UI BUG FOUND: in the Sidebar component, the logout button is rendered below the visible viewport at 1920x1080 because the outer fixed sidebar div is missing `flex flex-col`, so the inner ScrollArea (flex-1) cannot constrain the long super_admin menu. Logout is only reachable via JS click, not real user interaction.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/dashboard (or stats)", "issue": "403 Forbidden when outlet_admin and order_manager fetch dashboard data after successful login. super_admin works fine. Login itself succeeds; only post-login dashboard data calls fail."},
+      {"endpoint": "/api/activity-logs (or similar)", "issue": "Returns 404 when admin opens /activity-logs page. UI shell renders but logs don't load. No Radix errors though."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Sidebar (/app/frontend/src/components/Sidebar.js)",
+        "issue": "CRITICAL: Logout button & user-info panel are positioned at ~y=1445px on a 1080-tall viewport, i.e., off-screen and unreachable via mouse. Root cause: outer container has classes `fixed left-0 top-0 h-screen ...` with default `display:block`. Children include ScrollArea using `flex-1` and a bottom `border-t` panel containing the logout button. Without `flex flex-col` on the outer div, `flex-1` does not constrain the ScrollArea, so all menu items render at full natural height and push the logout panel below the viewport. Affects super_admin (24 menu items most). Fix: add `flex flex-col` to the outer sidebar div (line ~90).",
+        "selector": "div.fixed.left-0.top-0 / [data-testid=\"logout-button\"]",
+        "priority": "HIGH"
+      },
+      {
+        "component": "Login.js redirect logic vs test_credentials.md",
+        "issue": "factory_manager actually lands on /factory (correct per /app/memory/test_credentials.md and acceptable per review_request), but Login.js explicit code only handles kitchen/delivery and falls through to /dashboard for everyone else. The /factory landing happens because some implicit route guard is redirecting from /dashboard. Recommend adding explicit `factory_manager → /factory` case in Login.js for clarity.",
+        "selector": "/app/frontend/src/pages/Login.js lines 28-34",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "outlet_admin / order_manager dashboard data load",
+        "issue": "Login completes, redirect to /dashboard works, but dashboard data fetch returns 403 — these roles see an empty/error dashboard. Not a login bug, but immediate post-login UX is broken for 2 of 6 roles.",
+        "affected_selectors": ["dashboard data widgets"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_coverage_results": {
+    "TEST_1_logins": {
+      "super_admin": "PASS - lands on /dashboard, sidebar logo visible",
+      "outlet_admin": "PASS - lands on /dashboard, sidebar logo visible (dashboard data 403 - separate issue)",
+      "order_manager": "PASS - lands on /dashboard, sidebar logo visible (dashboard data 403 - separate issue)",
+      "kitchen": "PASS - lands on /kitchen (KitchenDashboardNew, no sidebar by design)",
+      "delivery": "PASS - lands on /delivery (no sidebar by design)",
+      "factory_manager": "PASS - lands on /factory (acceptable per spec; sidebar logo visible)"
+    },
+    "TEST_2_wrong_password": "PASS - 'Invalid email or password' alert shown, stays on /login",
+    "TEST_3_logo": "PASS - /us-bakers-logo.jpg renders in sidebar header (admin/outlet/manager/factory). Kitchen & delivery dashboards do not use sidebar (by design).",
+    "TEST_4_logout": "PARTIAL PASS - functional flow works (confirm dialog 'Are you sure you want to logout?' shows; clicking 'Yes, Logout' returns to /login and clears token). BUT logout button is off-viewport at 1080p — see CRITICAL UI bug above.",
+    "TEST_5_tv_kitchen_static": "PASS - /tv-kitchen.html loads as plain static HTML (no React root content), shows login form (#lEmail/#lPass/#lBtn), admin login works and Kitchen Display renders with WAITING/IN PROGRESS/READY/TOTAL TODAY tiles.",
+    "TEST_6_activity_logs_no_radix_errors": "PASS - 0 Radix Select empty-value errors on /activity-logs. (Separate 404 from backend logs API, not in scope.)",
+    "TEST_7_sidebar_collapse": "PASS - clicking X icon: sidebar width 256px → 64px AND main content margin reflows ml-64 → ml-16 correctly. Re-clicking expands back."
+  },
+  "test_report_links": [],
+  "action_items": [
+    "FIX (HIGH): Add `flex flex-col` to the outer sidebar container in /app/frontend/src/components/Sidebar.js (the `fixed left-0 top-0 h-screen ...` div, ~line 90) so the ScrollArea's flex-1 constrains long menus and the logout button stays inside the viewport.",
+    "FIX (MED): Investigate /api/dashboard 403s for outlet_admin and order_manager — login returns valid token+role but post-login data calls are forbidden. Likely RBAC mismatch in dashboard endpoint.",
+    "FIX (MED): /activity-logs page hits a 404 on logs fetch — verify the API path the frontend uses matches the actual backend route.",
+    "OPTIONAL (LOW): Add explicit factory_manager → /factory navigation in Login.js for clarity (currently relies on implicit redirect from /dashboard)."
+  ],
+  "critical_code_review_comments": [
+    "Sidebar.js outer div must use `flex flex-col` for fixed-height + scrollable middle + pinned bottom layout (current code is the canonical broken pattern).",
+    "AuthContext.js logout uses `window.location.href = '/login'` which is fine for a hard reset, but it bypasses React Router state — acceptable for logout but worth noting.",
+    "Login.js redirect logic only handles 2 of 6 roles explicitly; rest fall through to /dashboard relying on route guards. Consider a role→route map for maintainability.",
+    "Sidebar.js super_admin menu has 24 items — consider grouping/collapsing categories on smaller heights."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only run)", "frontend": "85% (6/7 tests fully pass; logout has UI defect though logic works)"},
+  "test_credentials": "Used credentials from /app/memory/test_credentials.md — file present and accurate for all 6 roles.",
+  "seed_data_creation": "None.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Login + redirects + wrong-pwd + TV static page + sidebar collapse + Activity Logs no-radix-errors all PASS. The single high-prio finding is the Sidebar logout button off-viewport caused by missing `flex flex-col` on the outer fixed sidebar div. After main agent applies the fix, retest by visually confirming the logout button is visible at 1920x1080 for super_admin (24 menu items) and that menu items scroll inside ScrollArea instead of overflowing the page. Two unrelated backend issues (dashboard 403 for outlet_admin/order_manager, activity-logs 404) were observed but were not in this iteration's scope.",
+  "rca_of_the_issue": "Sidebar.js outer container is `<div className=\"fixed left-0 top-0 h-screen ... w-64\">` with default block display. It has 3 children: a fixed-height header (h-16), a `<ScrollArea className=\"flex-1 py-4\">` and a footer panel with the logout button (`border-t p-4`). For `flex-1` to make ScrollArea fill the remaining vertical space (and clip its content with internal scroll), the parent must be a flex column. Since it isn't, ScrollArea grows to its full natural content height (~1300px+ for 24 menu items), pushing the footer/logout panel below the 1080px viewport. Reproduction: login as super_admin at 1920x1080 → observe `[data-testid=\"logout-button\"]` getBoundingClientRect().top ≈ 1445 (outside viewport). Mitigation: change line 90 to `<div className=\"fixed left-0 top-0 h-screen flex flex-col bg-white border-r shadow-sm transition-all duration-300 z-50 ${collapsed ? 'w-16' : 'w-64'}\">`."
+}

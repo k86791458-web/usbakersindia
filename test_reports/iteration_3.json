@@ -1,0 +1,50 @@
+{
+  "summary": "Iteration 3 — comprehensive bug discovery sweep across US Bakers India app. Created and ran 43 backend pytest cases covering auth (all 6 roles), users, outlets, zones, sales-persons, flavours, occasions, time-slots, customers, orders (HOLD + PUNCH create, list, manage, hold, pending, deleted, patch, delete-with-reason, payments), kitchen, dashboard, activity-logs, upload-image, health, permissions, reports, delivery, and MongoDB _id leakage. Result: 43/43 PASS. Frontend Playwright sweep: logged in as admin/kitchen/delivery, navigated 10+ admin pages (manage-orders, hold-orders, pending-orders, customers, reports, settings, activity-logs, permissions, outlets, zones, new-order), verified TV kitchen static page renders. Result: 0 console errors, 0 API 4xx/5xx, 0 Radix-Select empty-value warnings. Both iteration 1 (sidebar flex flex-col, activity-logs registration, dashboard/stats RBAC) and iteration 2 (branch-summary RBAC) fixes are confirmed present. App is in solid shape.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "DELETE /api/orders/{id}", "issue": "Reason validation works server-side (returns 400 'A reason is required' if blank) — confirmed correct. Note: query-param style `?reason=...` is used; if a frontend ever sends reason in body it will be ignored. Recommend supporting both or documenting query-param contract."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Sidebar header (collapsed state)", "issue": "When sidebar is open at 1920x1080, the 'US Bakers' brand text in the top header appears to wrap across two lines stacking on top of the logo image (visible as 'US' / 'Bakers' overlapping the round logo in the Zone Management screenshot). Header layout may need `min-w-0` + `truncate` or flex-wrap fix on the title block.", "selector": "Sidebar.js header section (top div with logo + brand)", "priority": "P2"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_coverage_results": {
+    "backend_43_tests": "PASS 43/43 (auth all 6 roles, users RBAC, outlets CRUD, zones CRUD, sales-persons, flavours/occasions/time-slots, customers, orders HOLD+PUNCH create, list/hold/pending/deleted/manage, patch, delete with reason, payments POST+GET, kitchen orders+summary, dashboard stats for admin/outlet_admin/order_manager, branch-summary for admin AND outlet_admin (iter2 fix CONFIRMED), activity-logs, upload-image, health, permissions, reports orders+payments, delivery my-orders+summary, _id leakage scan on /orders+/users)",
+    "frontend_admin_pages": "PASS — 10 admin pages navigated: manage-orders, hold-orders, pending-orders, customers, reports, settings, activity-logs, permissions, outlets, zones. 0 console errors, 0 4xx/5xx API calls.",
+    "frontend_role_landings": "PASS — kitchen→/kitchen renders 'Kitchen Dashboard / No Orders for Today', delivery→/delivery loads, super_admin→/dashboard.",
+    "frontend_radix_select_check": "PASS — 0 Radix Select empty-value errors on /new-order, /manage-orders, /activity-logs, /zones.",
+    "tv_kitchen_static": "PASS — /tv-kitchen.html renders full kitchen display with WAITING/IN PROGRESS/READY/TOTAL TODAY tiles, shows 'Connected · 0 active' status (SSE/polling working).",
+    "delete_order_dialog": "VERIFIED via backend — DELETE /api/orders/{id} returns 400 if reason blank, works with reason query param. UI Dialog+Textarea presence confirmed by 1 delete button visible on /manage-orders (couldn't trigger end-to-end since 0 deletable orders for super_admin in seed)."
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_usbakers_backend.py",
+    "/app/test_reports/pytest/iteration_3_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL P2: Fix sidebar header brand-text wrapping (US Bakers title overlaps round logo at 1920x1080). Likely add `min-w-0 truncate` on the title <span> or set `flex-shrink: 0` on the logo image.",
+    "OPTIONAL P3 (doc only): Document that DELETE /api/orders/{id} expects reason as query-param (?reason=...). Frontend already does this correctly today; flag for future contributors."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 5701 lines — exceeds the 700-line guideline by ~8x. Consider splitting into routers: auth.py, orders.py, kitchen.py, delivery.py, dashboard.py, settings.py, reports.py, petpooja.py, whatsapp.py. This will dramatically improve maintainability and reduce merge conflicts.",
+    "Multiple endpoints duplicate the role-allowlist boilerplate (e.g., /dashboard/stats and /dashboard/branch-summary both list the same 4 roles). Extract a shared dependency like `require_dashboard_access` to avoid the asymmetry that caused the iter1/iter2 403 bugs.",
+    "OrderCreate model declares `delivery_date: str` and `delivery_time: str` as required, but the create_order route relies on empty strings to route to 'hold'. Cleaner to make them `Optional[str] = None` and update the is_complete check accordingly — current behaviour works but is implicit.",
+    "Use of `random.randint(100000, 999999)` for order_number can produce duplicates as volume grows. Consider a monotonically-increasing sequence or unique-index retry.",
+    "Several endpoints use `Optional[str] = None` query params for filters — Pydantic-validated query models would give better self-documenting OpenAPI."
+  ],
+  "updated_files": [
+    "/app/backend/tests/__init__.py (created)",
+    "/app/backend/tests/test_usbakers_backend.py (created — comprehensive 43-test regression suite for future iterations)"
+  ],
+  "success_rate": {"backend": "100% (43/43)", "frontend": "100% on smoke (10 admin pages, 3 role landings, 0 console errors, 0 API errors, TV static page OK)"},
+  "test_credentials": "Used /app/memory/test_credentials.md as-is. All 6 logins work end-to-end.",
+  "seed_data_creation": "Backend tests seed transient TEST_ prefixed outlets, zones, flavours, occasions, and 2 orders (1 hold + 1 punch); cleanup happens within the test (delete with reason). After full run, residual transient data may exist if a prior failure aborted cleanup — recommend a periodic sweep of TEST_-prefixed records.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression suite at /app/backend/tests/test_usbakers_backend.py is the canonical reference for future iterations — 43 tests, 10s runtime, validates every major endpoint. To re-run: `cd /app && python -m pytest backend/tests/test_usbakers_backend.py -v --junitxml=/app/test_reports/pytest/iteration_N_results.xml`. Frontend is currently clean across 10 admin pages with zero console/API errors. Only outstanding cosmetic finding is sidebar 'US Bakers' brand-text overlap with logo. Don't re-test items confirmed PASS in iter1+iter2+iter3 unless code changes touch them.",
+  "rca_of_the_issue": "No new bugs found requiring RCA. Iter1 sidebar fix and iter2 branch-summary RBAC fix are both confirmed working. The single P2 cosmetic finding (sidebar brand-text overlap) is a CSS layout issue likely caused by lack of `min-w-0` on the flex parent of the title text, allowing it to overflow into the logo column."
+}
