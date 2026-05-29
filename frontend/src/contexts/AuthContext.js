@@ -50,18 +50,46 @@ export const AuthProvider = ({ children }) => {
   const login = async (email, password) => {
     try {
       const response = await axios.post(`${API}/auth/login`, { email, password });
-      const { access_token, user: userData } = response.data;
-      
+      const data = response.data || {};
+
+      // 2FA challenge — caller must collect OTP and call verify2FA
+      if (data.requires_2fa) {
+        return {
+          success: true,
+          requires_2fa: true,
+          challenge_token: data.challenge_token,
+          email: data.email
+        };
+      }
+
+      const { access_token, user: userData } = data;
       localStorage.setItem('token', access_token);
-      loginJustCompleted.current = true; // Mark that login just completed
+      loginJustCompleted.current = true;
       setToken(access_token);
       setUser(userData);
-      
+
       return { success: true, user: userData };
     } catch (error) {
       return {
         success: false,
         error: error.response?.data?.detail || 'Login failed'
+      };
+    }
+  };
+
+  const verify2FA = async (challenge_token, code) => {
+    try {
+      const response = await axios.post(`${API}/auth/login/verify-2fa`, { challenge_token, code });
+      const { access_token, user: userData, used_backup_code, remaining_backup_codes } = response.data;
+      localStorage.setItem('token', access_token);
+      loginJustCompleted.current = true;
+      setToken(access_token);
+      setUser(userData);
+      return { success: true, user: userData, used_backup_code, remaining_backup_codes };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.response?.data?.detail || '2FA verification failed'
       };
     }
   };
@@ -80,6 +108,7 @@ export const AuthProvider = ({ children }) => {
     user,
     token,
     login,
+    verify2FA,
     logout,
     loading,
     isAuthenticated: !!user,
@@ -88,7 +117,16 @@ export const AuthProvider = ({ children }) => {
     isOrderManager: user?.role === 'order_manager',
     isKitchen: user?.role === 'kitchen',
     isDelivery: user?.role === 'delivery',
-    isAccounts: user?.role === 'accounts'
+    isAccounts: user?.role === 'accounts',
+    refreshUser: async () => {
+      try {
+        const r = await axios.get(`${API}/auth/me`);
+        setUser(r.data);
+        return r.data;
+      } catch (e) {
+        return null;
+      }
+    }
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

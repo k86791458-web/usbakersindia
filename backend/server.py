@@ -16,6 +16,10 @@ import logging
 import uuid
 import requests
 import random
+import secrets
+import base64
+import pyotp
+import qrcode
 from pathlib import Path
 from io import BytesIO
 from reportlab.lib.pagesizes import letter, A4
@@ -256,6 +260,10 @@ class User(BaseModel):
     is_active: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     created_by: Optional[str] = None  # User ID of creator
+    # Two-Factor Authentication (TOTP) - Super Admin scope, optional per user
+    is_two_factor_enabled: bool = False
+    two_factor_secret: Optional[str] = None  # Base32 TOTP secret (kept server-side)
+    two_factor_backup_codes: List[str] = []  # Hashed one-time backup codes
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -282,6 +290,7 @@ class UserResponse(BaseModel):
     outlet_ids: List[str] = []
     is_active: bool
     created_at: datetime
+    is_two_factor_enabled: bool = False
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -291,6 +300,16 @@ class Token(BaseModel):
     access_token: str
     token_type: str
     user: UserResponse
+
+class TwoFactorLoginRequest(BaseModel):
+    challenge_token: str
+    code: str  # 6-digit TOTP code or 8-char backup code
+
+class TwoFactorVerifyRequest(BaseModel):
+    code: str
+
+class TwoFactorDisableRequest(BaseModel):
+    password: str
 
 # Outlet Models
 class Outlet(BaseModel):
@@ -765,9 +784,9 @@ def has_permission(user: User, permission: str) -> bool:
 
 # ==================== AUTH ENDPOINTS ====================
 
-@api_router.post("/auth/login", response_model=Token)
+@api_router.post("/auth/login")
 async def login(login_data: LoginRequest):
-    """Login endpoint for all user roles"""
+    """Login endpoint for all user roles. If 2FA is enabled, returns a challenge token."""
     user_doc = await db.users.find_one({"email": login_data.email}, {"_id": 0})
     
     if not user_doc:
@@ -784,6 +803,18 @@ async def login(login_data: LoginRequest):
     if not verify_password(login_data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
+    # If 2FA enabled, issue a short-lived challenge token instead of full access token
+    if user.is_two_factor_enabled and user.two_factor_secret:
+        challenge_token = create_access_token(
+            data={"sub": user.id, "purpose": "2fa_challenge"},
+            expires_delta=timedelta(minutes=5)
+        )
+        return {
+            "requires_2fa": True,
+            "challenge_token": challenge_token,
+            "email": user.email
+        }
+    
     access_token = create_access_token(data={"sub": user.id, "role": user.role.value})
     
     user_response = UserResponse(
@@ -796,7 +827,8 @@ async def login(login_data: LoginRequest):
         incentive_percentage=user.incentive_percentage,
         outlet_id=user.outlet_id,
         is_active=user.is_active,
-        created_at=user.created_at
+        created_at=user.created_at,
+        is_two_factor_enabled=user.is_two_factor_enabled
     )
 
     try:
@@ -808,7 +840,210 @@ async def login(login_data: LoginRequest):
     except Exception as _e:
         logger.error(f"activity_log failed (login): {_e}")
 
-    return Token(access_token=access_token, token_type="bearer", user=user_response)
+    return {
+        "requires_2fa": False,
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user_response.model_dump(mode='json')
+    }
+
+
+@api_router.post("/auth/login/verify-2fa")
+async def login_verify_2fa(payload: TwoFactorLoginRequest):
+    """Second step of login when 2FA is enabled. Validates TOTP or backup code."""
+    try:
+        decoded = jwt.decode(payload.challenge_token, SECRET_KEY, algorithms=[ALGORITHM])
+        if decoded.get("purpose") != "2fa_challenge":
+            raise HTTPException(status_code=401, detail="Invalid challenge token")
+        user_id = decoded.get("sub")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Challenge expired. Please login again.")
+    
+    user_doc = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user_doc:
+        raise HTTPException(status_code=401, detail="User not found")
+    if isinstance(user_doc.get('created_at'), str):
+        user_doc['created_at'] = datetime.fromisoformat(user_doc['created_at'])
+    user = User(**user_doc)
+    
+    if not user.is_two_factor_enabled or not user.two_factor_secret:
+        raise HTTPException(status_code=400, detail="2FA is not enabled for this user")
+    
+    code = (payload.code or "").strip().replace(" ", "").upper()
+    valid = False
+    used_backup = None
+    
+    # Try TOTP first (6 digits, allow 1-step window)
+    if code.isdigit() and len(code) == 6:
+        totp = pyotp.TOTP(user.two_factor_secret)
+        valid = totp.verify(code, valid_window=1)
+    else:
+        # Try backup code (8 char alphanumeric)
+        for hashed in user.two_factor_backup_codes:
+            if pwd_context.verify(code, hashed):
+                valid = True
+                used_backup = hashed
+                break
+    
+    if not valid:
+        raise HTTPException(status_code=401, detail="Invalid 2FA code")
+    
+    # Consume backup code if used
+    if used_backup:
+        await db.users.update_one(
+            {"id": user.id},
+            {"$pull": {"two_factor_backup_codes": used_backup}}
+        )
+    
+    access_token = create_access_token(data={"sub": user.id, "role": user.role.value})
+    user_response = UserResponse(
+        id=user.id, email=user.email, name=user.name, phone=user.phone,
+        role=user.role, permissions=user.permissions,
+        incentive_percentage=user.incentive_percentage,
+        outlet_id=user.outlet_id, is_active=user.is_active,
+        created_at=user.created_at, is_two_factor_enabled=user.is_two_factor_enabled
+    )
+    
+    try:
+        await create_activity_log(
+            user=user, action_type="login_2fa",
+            description=f"{user.name} ({user.role.value}) logged in with 2FA",
+            entity_type="user", entity_id=user.id, outlet_id=user.outlet_id
+        )
+    except Exception as _e:
+        logger.error(f"activity_log failed (login_2fa): {_e}")
+    
+    return {
+        "requires_2fa": False,
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user_response.model_dump(mode='json'),
+        "used_backup_code": bool(used_backup),
+        "remaining_backup_codes": len(user.two_factor_backup_codes) - (1 if used_backup else 0)
+    }
+
+
+# ==================== 2FA MANAGEMENT (Super Admin only) ====================
+
+def _generate_backup_codes(n: int = 8) -> List[str]:
+    """Generate n human-friendly 8-char backup codes (uppercase alnum, no ambiguous chars)."""
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # exclude I,O,0,1
+    return ["".join(secrets.choice(alphabet) for _ in range(8)) for _ in range(n)]
+
+
+@api_router.get("/auth/2fa/status")
+async def two_factor_status(current_user: User = Depends(get_current_user)):
+    """Return 2FA status for the current user."""
+    return {
+        "is_two_factor_enabled": current_user.is_two_factor_enabled,
+        "remaining_backup_codes": len(current_user.two_factor_backup_codes),
+        "is_super_admin": current_user.role == UserRole.SUPER_ADMIN
+    }
+
+
+@api_router.post("/auth/2fa/setup")
+async def two_factor_setup(current_user: User = Depends(get_current_user)):
+    """Start 2FA setup for current user (Super Admin only).
+    Generates a TOTP secret + provisioning URI + QR code (data URL).
+    The secret is stored pending verification; 2FA is NOT yet enabled.
+    """
+    if current_user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=403, detail="2FA is available for Super Admin only")
+    
+    secret = pyotp.random_base32()
+    issuer = "US Bakers India"
+    label = f"{issuer}:{current_user.email}"
+    provisioning_uri = pyotp.totp.TOTP(secret).provisioning_uri(name=current_user.email, issuer_name=issuer)
+    
+    # Build QR code as data URI (PNG)
+    qr_img = qrcode.make(provisioning_uri)
+    buf = BytesIO()
+    qr_img.save(buf, format='PNG')
+    qr_data_uri = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode('ascii')
+    
+    # Store the pending secret; do not enable yet
+    await db.users.update_one(
+        {"id": current_user.id},
+        {"$set": {"two_factor_secret": secret, "is_two_factor_enabled": False}}
+    )
+    
+    return {
+        "secret": secret,
+        "provisioning_uri": provisioning_uri,
+        "qr_code": qr_data_uri,
+        "issuer": issuer,
+        "account": current_user.email
+    }
+
+
+@api_router.post("/auth/2fa/enable")
+async def two_factor_enable(payload: TwoFactorVerifyRequest, current_user: User = Depends(get_current_user)):
+    """Verify the TOTP code and enable 2FA. Returns 8 one-time backup codes (shown only once)."""
+    if current_user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=403, detail="2FA is available for Super Admin only")
+    if not current_user.two_factor_secret:
+        raise HTTPException(status_code=400, detail="Run /auth/2fa/setup first")
+    
+    code = (payload.code or "").strip().replace(" ", "")
+    if not (code.isdigit() and len(code) == 6):
+        raise HTTPException(status_code=400, detail="Enter the 6-digit code from your authenticator app")
+    
+    totp = pyotp.TOTP(current_user.two_factor_secret)
+    if not totp.verify(code, valid_window=1):
+        raise HTTPException(status_code=401, detail="Invalid code. Please try again.")
+    
+    # Generate plain backup codes (show once) and store hashed versions
+    plain_codes = _generate_backup_codes(8)
+    hashed_codes = [pwd_context.hash(c) for c in plain_codes]
+    
+    await db.users.update_one(
+        {"id": current_user.id},
+        {"$set": {
+            "is_two_factor_enabled": True,
+            "two_factor_backup_codes": hashed_codes
+        }}
+    )
+    
+    return {
+        "success": True,
+        "message": "Two-factor authentication enabled successfully",
+        "backup_codes": plain_codes
+    }
+
+
+@api_router.post("/auth/2fa/disable")
+async def two_factor_disable(payload: TwoFactorDisableRequest, current_user: User = Depends(get_current_user)):
+    """Disable 2FA. Requires the user's password for confirmation."""
+    if not current_user.is_two_factor_enabled:
+        return {"success": True, "message": "2FA is not enabled"}
+    if not verify_password(payload.password, current_user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid password")
+    
+    await db.users.update_one(
+        {"id": current_user.id},
+        {"$set": {
+            "is_two_factor_enabled": False,
+            "two_factor_secret": None,
+            "two_factor_backup_codes": []
+        }}
+    )
+    return {"success": True, "message": "Two-factor authentication disabled"}
+
+
+@api_router.post("/auth/2fa/regenerate-backup-codes")
+async def regenerate_backup_codes(payload: TwoFactorVerifyRequest, current_user: User = Depends(get_current_user)):
+    """Regenerate backup codes. Requires a fresh TOTP code."""
+    if not current_user.is_two_factor_enabled or not current_user.two_factor_secret:
+        raise HTTPException(status_code=400, detail="2FA is not enabled")
+    code = (payload.code or "").strip()
+    if not (code.isdigit() and len(code) == 6 and pyotp.TOTP(current_user.two_factor_secret).verify(code, valid_window=1)):
+        raise HTTPException(status_code=401, detail="Invalid TOTP code")
+    
+    plain_codes = _generate_backup_codes(8)
+    hashed = [pwd_context.hash(c) for c in plain_codes]
+    await db.users.update_one({"id": current_user.id}, {"$set": {"two_factor_backup_codes": hashed}})
+    return {"success": True, "backup_codes": plain_codes}
+
 
 @api_router.post("/auth/outlet-login", response_model=Token)
 async def outlet_login(login_data: LoginRequest):
@@ -858,7 +1093,8 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
         incentive_percentage=getattr(current_user, 'incentive_percentage', 0.0),
         outlet_id=current_user.outlet_id,
         is_active=current_user.is_active,
-        created_at=current_user.created_at
+        created_at=current_user.created_at,
+        is_two_factor_enabled=current_user.is_two_factor_enabled
     )
 
 # ==================== USER MANAGEMENT (Super Admin) ====================
@@ -3622,6 +3858,245 @@ async def get_delivery_report(
         },
         "orders": orders
     }
+
+# ==================== US BAKERS CUSTOM REPORTS ====================
+
+def _scope_outlet_query(current_user: User, outlet_id: Optional[str], query: dict) -> dict:
+    """Apply outlet scoping based on the current user's permissions."""
+    if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+        query['outlet_id'] = current_user.outlet_id
+    elif outlet_id:
+        query['outlet_id'] = outlet_id
+    return query
+
+
+@api_router.get("/reports/sales-summary")
+async def report_sales_summary(
+    start_date: str,
+    end_date: str,
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user)
+):
+    """Sales Summary: totals, paid vs pending, AOV, delivery vs pickup,
+    daily revenue trend, payment method split."""
+    query = {
+        "delivery_date": {"$gte": start_date, "$lte": end_date},
+        "is_deleted": False
+    }
+    query = _scope_outlet_query(current_user, outlet_id, query)
+    
+    orders = await db.orders.find(query, {"_id": 0}).to_list(20000)
+    
+    total_orders = len(orders)
+    total_amount = sum(o.get('total_amount', 0) or 0 for o in orders)
+    total_paid = sum(o.get('paid_amount', 0) or 0 for o in orders)
+    total_pending = sum(o.get('pending_amount', 0) or 0 for o in orders)
+    total_discount = sum(o.get('discount_amount', 0) or 0 for o in orders)
+    total_delivery_charge = sum(o.get('delivery_charge', 0) or 0 for o in orders)
+    aov = (total_amount / total_orders) if total_orders else 0
+    
+    delivery_orders = sum(1 for o in orders if o.get('needs_delivery'))
+    pickup_orders = total_orders - delivery_orders
+    
+    # Daily trend
+    daily = {}
+    for o in orders:
+        d = o.get('delivery_date') or 'unknown'
+        if d not in daily:
+            daily[d] = {"date": d, "orders": 0, "revenue": 0.0, "paid": 0.0, "pending": 0.0}
+        daily[d]["orders"] += 1
+        daily[d]["revenue"] += o.get('total_amount', 0) or 0
+        daily[d]["paid"] += o.get('paid_amount', 0) or 0
+        daily[d]["pending"] += o.get('pending_amount', 0) or 0
+    daily_trend = sorted(daily.values(), key=lambda x: x['date'])
+    
+    # Status breakdown
+    status_breakdown = {}
+    for o in orders:
+        s = o.get('status', 'unknown')
+        status_breakdown[s] = status_breakdown.get(s, 0) + 1
+    
+    # Payment method split (from payments collection within range)
+    pay_query = {
+        "paid_at": {
+            "$gte": datetime.fromisoformat(start_date + "T00:00:00+00:00") if "T" not in start_date else datetime.fromisoformat(start_date),
+            "$lte": datetime.fromisoformat(end_date + "T23:59:59+00:00") if "T" not in end_date else datetime.fromisoformat(end_date),
+        }
+    }
+    try:
+        payments = await db.payments.find(pay_query, {"_id": 0}).to_list(20000)
+    except Exception:
+        payments = []
+    
+    method_split = {}
+    for p in payments:
+        m = (p.get('payment_method') or 'unknown').lower()
+        method_split[m] = method_split.get(m, 0) + (p.get('amount', 0) or 0)
+    
+    return {
+        "summary": {
+            "total_orders": total_orders,
+            "total_revenue": round(total_amount, 2),
+            "total_paid": round(total_paid, 2),
+            "total_pending": round(total_pending, 2),
+            "total_discount": round(total_discount, 2),
+            "total_delivery_charge": round(total_delivery_charge, 2),
+            "average_order_value": round(aov, 2),
+            "delivery_orders": delivery_orders,
+            "pickup_orders": pickup_orders,
+        },
+        "daily_trend": daily_trend,
+        "status_breakdown": status_breakdown,
+        "payment_method_split": method_split
+    }
+
+
+@api_router.get("/reports/top-customers")
+async def report_top_customers(
+    start_date: str,
+    end_date: str,
+    outlet_id: Optional[str] = None,
+    limit: int = 10,
+    current_user: User = Depends(get_current_user)
+):
+    """Top customers by total spend (within date range)."""
+    query = {
+        "delivery_date": {"$gte": start_date, "$lte": end_date},
+        "is_deleted": False
+    }
+    query = _scope_outlet_query(current_user, outlet_id, query)
+    
+    orders = await db.orders.find(query, {"_id": 0}).to_list(20000)
+    
+    agg: Dict[str, Dict[str, Any]] = {}
+    for o in orders:
+        c = o.get('customer_info') or {}
+        phone = (c.get('phone') or '').strip()
+        name = (c.get('name') or 'Unknown').strip()
+        key = phone if phone else f"name::{name.lower()}"
+        if key not in agg:
+            agg[key] = {
+                "customer_name": name,
+                "customer_phone": phone,
+                "orders_count": 0,
+                "total_spend": 0.0,
+                "total_paid": 0.0,
+                "total_pending": 0.0,
+                "last_order_date": ""
+            }
+        agg[key]["orders_count"] += 1
+        agg[key]["total_spend"] += o.get('total_amount', 0) or 0
+        agg[key]["total_paid"] += o.get('paid_amount', 0) or 0
+        agg[key]["total_pending"] += o.get('pending_amount', 0) or 0
+        d = o.get('delivery_date') or ''
+        if d > agg[key]["last_order_date"]:
+            agg[key]["last_order_date"] = d
+    
+    rows = sorted(agg.values(), key=lambda r: r["total_spend"], reverse=True)[:limit]
+    for r in rows:
+        r["total_spend"] = round(r["total_spend"], 2)
+        r["total_paid"] = round(r["total_paid"], 2)
+        r["total_pending"] = round(r["total_pending"], 2)
+    
+    return {"limit": limit, "customers": rows, "total_unique_customers": len(agg)}
+
+
+@api_router.get("/reports/top-products")
+async def report_top_products(
+    start_date: str,
+    end_date: str,
+    outlet_id: Optional[str] = None,
+    limit: int = 10,
+    current_user: User = Depends(get_current_user)
+):
+    """Top products (cake flavours) by orders & revenue."""
+    query = {
+        "delivery_date": {"$gte": start_date, "$lte": end_date},
+        "is_deleted": False
+    }
+    query = _scope_outlet_query(current_user, outlet_id, query)
+    
+    orders = await db.orders.find(query, {"_id": 0}).to_list(20000)
+    
+    agg: Dict[str, Dict[str, Any]] = {}
+    for o in orders:
+        flavour = (o.get('flavour') or 'Unknown').strip()
+        if flavour not in agg:
+            agg[flavour] = {
+                "product": flavour,
+                "orders_count": 0,
+                "total_revenue": 0.0,
+                "total_pounds": 0.0
+            }
+        agg[flavour]["orders_count"] += 1
+        agg[flavour]["total_revenue"] += o.get('total_amount', 0) or 0
+        agg[flavour]["total_pounds"] += (o.get('size_pounds') or 0)
+    
+    rows = sorted(agg.values(), key=lambda r: r["total_revenue"], reverse=True)[:limit]
+    for r in rows:
+        r["total_revenue"] = round(r["total_revenue"], 2)
+        r["total_pounds"] = round(r["total_pounds"], 2)
+    
+    return {"limit": limit, "products": rows, "total_unique_products": len(agg)}
+
+
+@api_router.get("/reports/outlet-performance")
+async def report_outlet_performance(
+    start_date: str,
+    end_date: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Per-outlet performance: orders, revenue, paid, pending, delivery rate, AOV."""
+    # Only super admin and users with multi-outlet scope should see all
+    query = {
+        "delivery_date": {"$gte": start_date, "$lte": end_date},
+        "is_deleted": False
+    }
+    if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+        query['outlet_id'] = current_user.outlet_id
+    
+    orders = await db.orders.find(query, {"_id": 0}).to_list(50000)
+    outlets = await db.outlets.find({}, {"_id": 0}).to_list(1000)
+    outlet_name_map = {o['id']: o.get('name', 'Unknown') for o in outlets}
+    
+    agg: Dict[str, Dict[str, Any]] = {}
+    for o in orders:
+        oid = o.get('outlet_id') or 'unknown'
+        if oid not in agg:
+            agg[oid] = {
+                "outlet_id": oid,
+                "outlet_name": outlet_name_map.get(oid, "Unknown"),
+                "orders_count": 0,
+                "total_revenue": 0.0,
+                "total_paid": 0.0,
+                "total_pending": 0.0,
+                "delivery_orders": 0,
+                "delivered_orders": 0,
+                "cancelled_orders": 0,
+            }
+        a = agg[oid]
+        a["orders_count"] += 1
+        a["total_revenue"] += o.get('total_amount', 0) or 0
+        a["total_paid"] += o.get('paid_amount', 0) or 0
+        a["total_pending"] += o.get('pending_amount', 0) or 0
+        if o.get('needs_delivery'):
+            a["delivery_orders"] += 1
+        if o.get('status') == OrderStatus.DELIVERED.value:
+            a["delivered_orders"] += 1
+        if o.get('status') == OrderStatus.CANCELLED.value:
+            a["cancelled_orders"] += 1
+    
+    rows = list(agg.values())
+    for r in rows:
+        r["average_order_value"] = round((r["total_revenue"] / r["orders_count"]) if r["orders_count"] else 0, 2)
+        r["delivery_completion_rate"] = round((r["delivered_orders"] / r["delivery_orders"] * 100) if r["delivery_orders"] else 0, 2)
+        r["total_revenue"] = round(r["total_revenue"], 2)
+        r["total_paid"] = round(r["total_paid"], 2)
+        r["total_pending"] = round(r["total_pending"], 2)
+    
+    rows.sort(key=lambda x: x["total_revenue"], reverse=True)
+    return {"outlets": rows}
+
 
 # ==================== DELIVERY ENDPOINTS ====================
 

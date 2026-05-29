@@ -5,9 +5,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { ChevronDown, ChevronUp, Wallet, CreditCard } from 'lucide-react';
+import { ChevronDown, ChevronUp, Wallet, CreditCard, AlertCircle } from 'lucide-react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -20,6 +21,20 @@ const Payments = () => {
   const [expandedOrders, setExpandedOrders] = useState(new Set());
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(10);
+  const [activeTab, setActiveTab] = useState('all'); // 'all' | 'pending'
+
+  // Reset to page 1 whenever tab/outlet filter changes
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeTab, filterOutlet]);
+
+  // Filtered list based on active tab
+  const filteredPayments = activeTab === 'pending'
+    ? paymentsData.filter((o) => (o.pending_amount || 0) > 0)
+    : paymentsData;
+
+  const totalPendingAmount = paymentsData.reduce((sum, o) => sum + (o.pending_amount || 0), 0);
+  const pendingOrdersCount = paymentsData.filter((o) => (o.pending_amount || 0) > 0).length;
 
   useEffect(() => {
     fetchOutlets();
@@ -164,20 +179,53 @@ const Payments = () => {
           </CardContent>
         </Card>
 
+        {/* Payments Table with Tabs */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="grid w-full max-w-md grid-cols-2" data-testid="payments-tabs">
+            <TabsTrigger value="all" data-testid="payments-tab-all">
+              All Payments ({paymentsData.length})
+            </TabsTrigger>
+            <TabsTrigger value="pending" data-testid="payments-tab-pending">
+              <AlertCircle className="mr-1 h-3.5 w-3.5 text-orange-500" />
+              Pending Payments ({pendingOrdersCount})
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+
+        {activeTab === 'pending' && (
+          <Card className="border-orange-200 bg-orange-50">
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-orange-700">Total Pending Across {pendingOrdersCount} Orders</p>
+                  <p className="text-2xl font-bold text-orange-700" data-testid="payments-pending-total">
+                    ₹{totalPendingAmount.toFixed(2)}
+                  </p>
+                </div>
+                <AlertCircle className="h-8 w-8 text-orange-500" />
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Payments Table */}
         <Card>
           <CardHeader>
-            <CardTitle>Orders with Payments ({paymentsData.length})</CardTitle>
+            <CardTitle data-testid="payments-list-title">
+              {activeTab === 'pending'
+                ? `Orders with Pending Payments (${filteredPayments.length})`
+                : `Orders with Payments (${filteredPayments.length})`}
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            {paymentsData.length === 0 ? (
-              <div className="text-center py-12 text-gray-500">
-                No payments found.
+            {filteredPayments.length === 0 ? (
+              <div className="text-center py-12 text-gray-500" data-testid="payments-empty-state">
+                {activeTab === 'pending' ? 'No orders with pending payments.' : 'No payments found.'}
               </div>
             ) : (
               <>
               <div className="space-y-4">
-                {paymentsData
+                {filteredPayments
                   .slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
                   .map((order) => (
                   <div key={order.order_id} className="border rounded-lg overflow-hidden">
