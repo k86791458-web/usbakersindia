@@ -6,9 +6,10 @@ import os
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 async def create_admin():
-    mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+    mongo_url = os.environ['MONGO_URL']
+    db_name = os.environ['DB_NAME']
     client = AsyncIOMotorClient(mongo_url)
-    db = client['usbakersindia']
+    db = client[db_name]
     
     # Check if admin exists
     existing = await db.users.find_one({"role": "super_admin"})
