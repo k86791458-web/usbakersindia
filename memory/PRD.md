@@ -78,17 +78,35 @@ Clone https://github.com/k86791458-web/usbakersindia.git into /app, then iterate
   - **Campaigns** — per-event campaign name + ordered `templateParams` selector + tags + enable switch.
 - Sidebar (super admin): added **AiSensy WhatsApp** menu item.
 
+### Iteration 5 — 2FA, Pending Payments, Custom Reports (2026-05-30)
+
+#### 1. Google Authenticator (TOTP) 2FA for Super Admin
+- **Backend** (`server.py` lines 934–1045): `/api/auth/2fa/status`, `/setup`, `/enable`, `/disable`, `/regenerate-backup-codes`. Login flow already supports challenge → verify step (`/auth/login` returns `requires_2fa=true` + `challenge_token`, `/auth/login/verify-2fa` completes login).
+- **DB fields on `users`**: `is_two_factor_enabled`, `two_factor_secret`, `two_factor_backup_codes` (hashed).
+- **Frontend** (`Settings.js`): new "Two-Factor Authentication" card visible only to super admin. Status badge (Enabled/Disabled) + remaining backup-codes counter. Four dialogs:
+  - Setup: QR code (data URI) + manual base32 secret + 6-digit verify input.
+  - Backup Codes (shown once): 8 codes + Copy + Download `.txt`.
+  - Disable: password-confirm.
+  - Regenerate: TOTP-confirm, invalidates old codes.
+- **Login** (`Login.js`): already had 2FA challenge step (`step='2fa'`) — validated end-to-end with pyotp-minted codes.
+
+#### 2. Pending Payments sub-tab
+- `Payments.js`: All Payments / Pending Payments tabs with `payments-tab-all` / `payments-tab-pending`. Pending tab filters `pending_amount > 0`.
+- **Fix:** Pagination block now uses `filteredPayments.length` (was `paymentsData.length` — caused wrong page count on Pending tab). Added `data-testid="payments-pagination-info|prev|next"`.
+
+#### 3. Custom US Bakers Reports + Excel Export
+- `Reports.js`: 4 report types (Sales Summary, Top Customers, Top Products, Outlet Performance). Date presets: Today, Last 7 days, Last 30 days, Current month, Custom. Default Top 10. Excel export via `xlsx` (filename embeds resolved date range).
+
 ## Testing
-- `/app/backend/tests/test_iteration_4_fixes.py` — 19 targeted tests (17 PASS / 2 skipped due to missing non-admin seeds).
-- `/app/backend/tests/test_usbakers_backend.py` — pre-existing 43-test regression.
-- See `/app/test_reports/iteration_4.json` for the full report.
+- Iteration 4: `/app/test_reports/iteration_4.json` (backend regression, 17/19 PASS).
+- Iteration 5: `/app/test_reports/iteration_5.json` — frontend-only, **100% (12/12 sub-assertions PASS)** across all 7 review flows. Admin user left with 2FA disabled.
 
 ## Backlog (P1/P2)
 - **P2 (carry-over):** Sidebar brand-text overlap on the round logo at wide widths — add `min-w-0 truncate` to the title span.
-- **P2:** `server.py` is ~6,000 lines — split into routers (auth, orders, kitchen, delivery, payments, aisensy, activity, settings).
+- **P2:** `server.py` is ~6,600 lines — split into routers (auth, orders, kitchen, delivery, payments, aisensy, activity, settings, twofa).
+- **P2:** `Settings.js` is ~1,170 lines after 2FA additions — extract `TwoFactorCard` + dialogs into `/components/settings/TwoFactor.jsx`.
 - **P2:** Capture IP + user-agent on the `login` activity log entry.
-- **P2:** Seed `kitchen@`, `outlet@`, etc. credentials so RBAC tests cover all 7 roles.
-- **P2:** Add a single-resource `GET /api/orders/{order_id}` endpoint.
+- **P2:** Seed orders with partial dues so Pending Payments pagination can be e2e re-verified.
 - **P3:** Mask AiSensy api_key with dynamic length (cosmetic).
 
 ## Next Action Items
