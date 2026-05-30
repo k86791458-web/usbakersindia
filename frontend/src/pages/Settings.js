@@ -9,13 +9,29 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Settings as SettingsIcon, Plus, Trash2, Save, Loader2, Clock, AlertTriangle } from 'lucide-react';
+import { Settings as SettingsIcon, Plus, Trash2, Save, Loader2, Clock, AlertTriangle, ShieldCheck, ShieldOff, KeyRound, Copy, Download, RefreshCw } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { useAuth } from '../contexts/AuthContext';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
 const Settings = () => {
+  const { isSuperAdmin } = useAuth();
+
+  // 2FA State (Super Admin only)
+  const [twoFactorStatus, setTwoFactorStatus] = useState({ is_two_factor_enabled: false, remaining_backup_codes: 0, is_super_admin: false });
+  const [twoFactorSetup, setTwoFactorSetup] = useState(null); // { secret, qr_code, provisioning_uri }
+  const [setupDialogOpen, setSetupDialogOpen] = useState(false);
+  const [verifyCode, setVerifyCode] = useState('');
+  const [backupCodes, setBackupCodes] = useState([]); // shown once
+  const [backupCodesDialogOpen, setBackupCodesDialogOpen] = useState(false);
+  const [disableDialogOpen, setDisableDialogOpen] = useState(false);
+  const [disablePassword, setDisablePassword] = useState('');
+  const [regenDialogOpen, setRegenDialogOpen] = useState(false);
+  const [regenCode, setRegenCode] = useState('');
+  const [twoFaLoading, setTwoFaLoading] = useState(false);
+
   // System Settings
   const [systemSettings, setSystemSettings] = useState({
     minimum_payment_percentage: 20,
@@ -83,6 +99,18 @@ const Settings = () => {
       // Fetch time slots
       const slotsRes = await axios.get(`${API}/time-slots`);
       setTimeSlots(slotsRes.data);
+
+      // Fetch 2FA status (Super Admin only)
+      if (isSuperAdmin) {
+        try {
+          const twoFaRes = await axios.get(`${API}/auth/2fa/status`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          setTwoFactorStatus(twoFaRes.data);
+        } catch (e) {
+          // ignore — non-blocking
+        }
+      }
     } catch (error) {
       console.error('Failed to fetch settings:', error);
       setError('Failed to load settings');
@@ -272,6 +300,128 @@ const Settings = () => {
     } finally {
       setResetting(false);
     }
+  };
+
+  // ==================== 2FA (Super Admin only) ====================
+  const refreshTwoFactorStatus = async () => {
+    const token = localStorage.getItem('token');
+    try {
+      const res = await axios.get(`${API}/auth/2fa/status`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setTwoFactorStatus(res.data);
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const startTwoFactorSetup = async () => {
+    const token = localStorage.getItem('token');
+    setTwoFaLoading(true);
+    try {
+      const res = await axios.post(`${API}/auth/2fa/setup`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setTwoFactorSetup(res.data);
+      setVerifyCode('');
+      setSetupDialogOpen(true);
+    } catch (err) {
+      showError(err.response?.data?.detail || 'Failed to start 2FA setup');
+    } finally {
+      setTwoFaLoading(false);
+    }
+  };
+
+  const verifyAndEnableTwoFactor = async () => {
+    const code = (verifyCode || '').replace(/\s+/g, '');
+    if (!/^\d{6}$/.test(code)) {
+      showError('Please enter the 6-digit code from your authenticator app');
+      return;
+    }
+    const token = localStorage.getItem('token');
+    setTwoFaLoading(true);
+    try {
+      const res = await axios.post(`${API}/auth/2fa/enable`, { code }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setBackupCodes(res.data.backup_codes || []);
+      setSetupDialogOpen(false);
+      setVerifyCode('');
+      setTwoFactorSetup(null);
+      setBackupCodesDialogOpen(true);
+      await refreshTwoFactorStatus();
+      showSuccess('Two-factor authentication enabled');
+    } catch (err) {
+      showError(err.response?.data?.detail || 'Invalid code. Please try again.');
+    } finally {
+      setTwoFaLoading(false);
+    }
+  };
+
+  const disableTwoFactor = async () => {
+    if (!disablePassword) {
+      showError('Enter your password to disable 2FA');
+      return;
+    }
+    const token = localStorage.getItem('token');
+    setTwoFaLoading(true);
+    try {
+      await axios.post(`${API}/auth/2fa/disable`, { password: disablePassword }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setDisableDialogOpen(false);
+      setDisablePassword('');
+      await refreshTwoFactorStatus();
+      showSuccess('Two-factor authentication disabled');
+    } catch (err) {
+      showError(err.response?.data?.detail || 'Failed to disable 2FA');
+    } finally {
+      setTwoFaLoading(false);
+    }
+  };
+
+  const regenerateBackupCodes = async () => {
+    const code = (regenCode || '').replace(/\s+/g, '');
+    if (!/^\d{6}$/.test(code)) {
+      showError('Enter the current 6-digit code from your authenticator app');
+      return;
+    }
+    const token = localStorage.getItem('token');
+    setTwoFaLoading(true);
+    try {
+      const res = await axios.post(`${API}/auth/2fa/regenerate-backup-codes`, { code }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setBackupCodes(res.data.backup_codes || []);
+      setRegenDialogOpen(false);
+      setRegenCode('');
+      setBackupCodesDialogOpen(true);
+      await refreshTwoFactorStatus();
+      showSuccess('New backup codes generated');
+    } catch (err) {
+      showError(err.response?.data?.detail || 'Failed to regenerate backup codes');
+    } finally {
+      setTwoFaLoading(false);
+    }
+  };
+
+  const copyBackupCodes = () => {
+    const text = backupCodes.join('\n');
+    navigator.clipboard.writeText(text).then(
+      () => showSuccess('Backup codes copied to clipboard'),
+      () => showError('Failed to copy backup codes')
+    );
+  };
+
+  const downloadBackupCodes = () => {
+    const text = `US Bakers India - 2FA Backup Codes\nGenerated: ${new Date().toISOString()}\n\n${backupCodes.join('\n')}\n\nKeep these codes safe. Each code can be used only once.`;
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'usbakers-2fa-backup-codes.txt';
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -678,7 +828,74 @@ const Settings = () => {
           </CardContent>
         </Card>
 
-        {/* SECTION 6: Reset System (Danger Zone) */}
+        {/* SECTION 6: Two-Factor Authentication (Super Admin only) */}
+        {isSuperAdmin && (
+          <Card data-testid="two-factor-card">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <ShieldCheck className="h-5 w-5" style={{ color: '#e92587' }} />
+                Two-Factor Authentication
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <p className="font-medium">
+                    Status:{' '}
+                    {twoFactorStatus.is_two_factor_enabled ? (
+                      <span className="text-green-600" data-testid="two-factor-status-enabled">Enabled</span>
+                    ) : (
+                      <span className="text-gray-600" data-testid="two-factor-status-disabled">Disabled</span>
+                    )}
+                  </p>
+                  <p className="text-sm text-gray-600">
+                    Protect your Super Admin account using Google Authenticator or any TOTP app.
+                  </p>
+                  {twoFactorStatus.is_two_factor_enabled && (
+                    <p className="text-xs text-gray-500 mt-1" data-testid="two-factor-backup-remaining">
+                      Backup codes remaining: <span className="font-semibold">{twoFactorStatus.remaining_backup_codes}</span>
+                    </p>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {!twoFactorStatus.is_two_factor_enabled ? (
+                    <Button
+                      onClick={startTwoFactorSetup}
+                      disabled={twoFaLoading}
+                      className="text-white"
+                      style={{ backgroundColor: '#e92587' }}
+                      data-testid="two-factor-enable-btn"
+                    >
+                      {twoFaLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
+                      Enable 2FA
+                    </Button>
+                  ) : (
+                    <>
+                      <Button
+                        variant="outline"
+                        onClick={() => { setRegenCode(''); setRegenDialogOpen(true); }}
+                        data-testid="two-factor-regen-btn"
+                      >
+                        <RefreshCw className="mr-2 h-4 w-4" />
+                        Regenerate Backup Codes
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        onClick={() => { setDisablePassword(''); setDisableDialogOpen(true); }}
+                        data-testid="two-factor-disable-btn"
+                      >
+                        <ShieldOff className="mr-2 h-4 w-4" />
+                        Disable 2FA
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* SECTION 7: Reset System (Danger Zone) */}
         <Card className="border-red-200">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-red-600">
@@ -737,6 +954,199 @@ const Settings = () => {
               >
                 {resetting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <AlertTriangle className="mr-2 h-4 w-4" />}
                 {resetting ? 'Resetting...' : 'Reset Everything'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* 2FA Setup Dialog */}
+        <Dialog open={setupDialogOpen} onOpenChange={(open) => { if (!open) { setSetupDialogOpen(false); setVerifyCode(''); } }}>
+          <DialogContent className="max-w-lg" data-testid="two-factor-setup-dialog">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <ShieldCheck className="h-5 w-5" style={{ color: '#e92587' }} />
+                Set up Two-Factor Authentication
+              </DialogTitle>
+              <DialogDescription>
+                Scan this QR code with Google Authenticator (or any TOTP app), then enter the 6-digit code to enable 2FA.
+              </DialogDescription>
+            </DialogHeader>
+            {twoFactorSetup && (
+              <div className="space-y-4">
+                <div className="flex justify-center">
+                  <img
+                    src={twoFactorSetup.qr_code}
+                    alt="2FA QR Code"
+                    className="w-48 h-48 border rounded-md"
+                    data-testid="two-factor-qr-code"
+                  />
+                </div>
+                <div className="text-center">
+                  <p className="text-xs text-gray-500 mb-1">Or enter this secret manually:</p>
+                  <code
+                    className="block text-xs bg-gray-100 px-3 py-2 rounded font-mono break-all"
+                    data-testid="two-factor-secret"
+                  >
+                    {twoFactorSetup.secret}
+                  </code>
+                </div>
+                <div>
+                  <Label htmlFor="totp-code">6-digit code from authenticator</Label>
+                  <Input
+                    id="totp-code"
+                    inputMode="numeric"
+                    maxLength={6}
+                    autoComplete="one-time-code"
+                    placeholder="123456"
+                    value={verifyCode}
+                    onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, ''))}
+                    className="text-center text-lg tracking-widest mt-1"
+                    data-testid="two-factor-verify-code-input"
+                  />
+                </div>
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setSetupDialogOpen(false); setVerifyCode(''); }} data-testid="two-factor-setup-cancel-btn">
+                Cancel
+              </Button>
+              <Button
+                onClick={verifyAndEnableTwoFactor}
+                disabled={twoFaLoading || verifyCode.length !== 6}
+                className="text-white"
+                style={{ backgroundColor: '#e92587' }}
+                data-testid="two-factor-verify-btn"
+              >
+                {twoFaLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
+                Verify & Enable
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Backup Codes Display Dialog */}
+        <Dialog open={backupCodesDialogOpen} onOpenChange={setBackupCodesDialogOpen}>
+          <DialogContent className="max-w-md" data-testid="backup-codes-dialog">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <KeyRound className="h-5 w-5" style={{ color: '#e92587' }} />
+                Save Your Backup Codes
+              </DialogTitle>
+              <DialogDescription>
+                Store these 8 backup codes in a safe place. Each code can be used only once if you lose access to your authenticator. They will not be shown again.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid grid-cols-2 gap-2 py-2" data-testid="backup-codes-list">
+              {backupCodes.map((code, idx) => (
+                <code
+                  key={idx}
+                  className="bg-gray-100 text-center font-mono text-sm py-2 rounded"
+                  data-testid={`backup-code-${idx}`}
+                >
+                  {code}
+                </code>
+              ))}
+            </div>
+            <DialogFooter className="flex-col sm:flex-row gap-2">
+              <Button variant="outline" onClick={copyBackupCodes} data-testid="backup-codes-copy-btn">
+                <Copy className="mr-2 h-4 w-4" />
+                Copy
+              </Button>
+              <Button variant="outline" onClick={downloadBackupCodes} data-testid="backup-codes-download-btn">
+                <Download className="mr-2 h-4 w-4" />
+                Download
+              </Button>
+              <Button
+                onClick={() => { setBackupCodesDialogOpen(false); setBackupCodes([]); }}
+                className="text-white"
+                style={{ backgroundColor: '#e92587' }}
+                data-testid="backup-codes-done-btn"
+              >
+                I've Saved Them
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Disable 2FA Dialog */}
+        <Dialog open={disableDialogOpen} onOpenChange={(open) => { if (!open) { setDisableDialogOpen(false); setDisablePassword(''); } }}>
+          <DialogContent data-testid="two-factor-disable-dialog">
+            <DialogHeader>
+              <DialogTitle className="text-red-600 flex items-center gap-2">
+                <ShieldOff className="h-5 w-5" />
+                Disable Two-Factor Authentication
+              </DialogTitle>
+              <DialogDescription>
+                Confirm your password to disable 2FA. Your authenticator and backup codes will be removed.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="py-2">
+              <Label htmlFor="disable-password">Password</Label>
+              <Input
+                id="disable-password"
+                type="password"
+                value={disablePassword}
+                onChange={(e) => setDisablePassword(e.target.value)}
+                placeholder="Enter your password"
+                className="mt-1"
+                data-testid="two-factor-disable-password-input"
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setDisableDialogOpen(false); setDisablePassword(''); }}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={disableTwoFactor}
+                disabled={twoFaLoading || !disablePassword}
+                data-testid="two-factor-disable-confirm-btn"
+              >
+                {twoFaLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldOff className="mr-2 h-4 w-4" />}
+                Disable 2FA
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Regenerate Backup Codes Dialog */}
+        <Dialog open={regenDialogOpen} onOpenChange={(open) => { if (!open) { setRegenDialogOpen(false); setRegenCode(''); } }}>
+          <DialogContent data-testid="two-factor-regen-dialog">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <RefreshCw className="h-5 w-5" style={{ color: '#e92587' }} />
+                Regenerate Backup Codes
+              </DialogTitle>
+              <DialogDescription>
+                Enter the current 6-digit code from your authenticator. Your existing backup codes will be invalidated.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="py-2">
+              <Label htmlFor="regen-code">Authenticator code</Label>
+              <Input
+                id="regen-code"
+                inputMode="numeric"
+                maxLength={6}
+                value={regenCode}
+                onChange={(e) => setRegenCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="123456"
+                className="text-center text-lg tracking-widest mt-1"
+                data-testid="two-factor-regen-code-input"
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setRegenDialogOpen(false); setRegenCode(''); }}>
+                Cancel
+              </Button>
+              <Button
+                onClick={regenerateBackupCodes}
+                disabled={twoFaLoading || regenCode.length !== 6}
+                className="text-white"
+                style={{ backgroundColor: '#e92587' }}
+                data-testid="two-factor-regen-confirm-btn"
+              >
+                {twoFaLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                Regenerate
               </Button>
             </DialogFooter>
           </DialogContent>

@@ -329,10 +329,10 @@ const Payments = () => {
               </div>
               
               {/* Pagination Controls */}
-              {paymentsData.length > itemsPerPage && (
-                <div className="flex items-center justify-between mt-4 px-4 pb-4">
-                  <div className="text-sm text-gray-600">
-                    Showing {((currentPage - 1) * itemsPerPage) + 1} to {Math.min(currentPage * itemsPerPage, paymentsData.length)} of {paymentsData.length} orders
+              {filteredPayments.length > itemsPerPage && (
+                <div className="flex items-center justify-between mt-4 px-4 pb-4" data-testid="payments-pagination">
+                  <div className="text-sm text-gray-600" data-testid="payments-pagination-info">
+                    Showing {((currentPage - 1) * itemsPerPage) + 1} to {Math.min(currentPage * itemsPerPage, filteredPayments.length)} of {filteredPayments.length} orders
                   </div>
                   <div className="flex space-x-2">
                     <Button
@@ -340,14 +340,16 @@ const Payments = () => {
                       variant="outline"
                       onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
                       disabled={currentPage === 1}
+                      data-testid="payments-pagination-prev"
                     >
                       Previous
                     </Button>
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => setCurrentPage(Math.min(Math.ceil(paymentsData.length / itemsPerPage), currentPage + 1))}
-                      disabled={currentPage >= Math.ceil(paymentsData.length / itemsPerPage)}
+                      onClick={() => setCurrentPage(Math.min(Math.ceil(filteredPayments.length / itemsPerPage), currentPage + 1))}
+                      disabled={currentPage >= Math.ceil(filteredPayments.length / itemsPerPage)}
+                      data-testid="payments-pagination-next"
                     >
                       Next
                     </Button>
