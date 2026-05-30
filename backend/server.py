@@ -39,6 +39,17 @@ except Exception:
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
+# Pending amount dust threshold: anything below this is treated as 0 (fully paid)
+PENDING_DUST_THRESHOLD = 1.0
+
+def normalize_pending(amount):
+    """Round pending amount to 2 decimals and zero out dust (< ₹1)."""
+    try:
+        value = round(float(amount or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if abs(value) < PENDING_DUST_THRESHOLD else value
+
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -1471,7 +1482,7 @@ async def apply_order_discount(
     existing_discount = float(order.get('discount_amount') or 0)
     new_discount = existing_discount + float(payload.discount_amount)
     new_total = float(order.get('total_amount') or 0) - float(payload.discount_amount)
-    new_pending = pending - float(payload.discount_amount)
+    new_pending = normalize_pending(pending - float(payload.discount_amount))
 
     await db.orders.update_one(
         {"id": order_id},
@@ -2393,7 +2404,7 @@ async def release_hold_order(
         update_data['status'] = 'pending'
     
     update_data['is_hold'] = False
-    update_data['pending_amount'] = total_amount - paid_amount
+    update_data['pending_amount'] = normalize_pending(total_amount - paid_amount)
     update_data['updated_at'] = datetime.now(timezone.utc).isoformat()
     
     await db.orders.update_one({"id": order_id}, {"$set": update_data})
@@ -2633,8 +2644,8 @@ async def update_order(
     if 'total_amount' in update_data:
         new_total = float(update_data['total_amount'])
         paid_amount = order.get('paid_amount', 0)
-        update_fields['pending_amount'] = new_total - paid_amount
-        logger.info(f"Order {order_id}: total changed to {new_total}, paid={paid_amount}, pending={new_total - paid_amount}")
+        update_fields['pending_amount'] = normalize_pending(new_total - paid_amount)
+        logger.info(f"Order {order_id}: total changed to {new_total}, paid={paid_amount}, pending={update_fields['pending_amount']}")
     
     await db.orders.update_one({"id": order_id}, {"$set": update_fields})
     
@@ -4436,7 +4447,7 @@ async def handle_petpooja_standard_format(request_data: Dict[str, Any]):
                         {"id": existing_payment['order_id']},
                         {"$set": {
                             "paid_amount": recalc_paid,
-                            "pending_amount": order_for_reversal['total_amount'] - recalc_paid,
+                            "pending_amount": normalize_pending(order_for_reversal['total_amount'] - recalc_paid),
                             "updated_at": datetime.now(timezone.utc).isoformat()
                         }}
                     )
@@ -4595,7 +4606,7 @@ async def handle_petpooja_standard_format(request_data: Dict[str, Any]):
                 {"id": order['id']},
                 {"$set": {
                     "paid_amount": new_paid_amount,
-                    "pending_amount": order['total_amount'] - new_paid_amount,
+                    "pending_amount": normalize_pending(order['total_amount'] - new_paid_amount),
                     "lifecycle_status": new_lifecycle,
                     "status": new_status,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -4680,7 +4691,7 @@ async def handle_petpooja_payment(request_data: Dict[str, Any]):
                         recalc_paid = sum(p.get('amount', 0) for p in remaining)
                         await db.orders.update_one(
                             {"id": existing_payment['order_id']},
-                            {"$set": {"paid_amount": recalc_paid, "pending_amount": order_for_reversal['total_amount'] - recalc_paid, "updated_at": datetime.now(timezone.utc).isoformat()}}
+                            {"$set": {"paid_amount": recalc_paid, "pending_amount": normalize_pending(order_for_reversal['total_amount'] - recalc_paid), "updated_at": datetime.now(timezone.utc).isoformat()}}
                         )
                     logger.info(f"Reversed payment for cancelled bill {bill_number}")
             return {"success": True, "message": "Cancelled bill - payment reversed"}
@@ -4783,7 +4794,7 @@ async def handle_petpooja_payment(request_data: Dict[str, Any]):
                 {"_id": 0, "amount": 1}
             ).to_list(100)
             new_paid_amount = sum(p.get('amount', 0) for p in all_payments)
-        new_pending = order.get('total_amount', 0) - new_paid_amount
+        new_pending = normalize_pending(order.get('total_amount', 0) - new_paid_amount)
         
         bill_numbers = order.get('petpooja_bill_numbers', [])
         if bill_number and bill_number not in bill_numbers:
@@ -5030,7 +5041,7 @@ async def handle_petpooja_new_order(data: Dict[str, Any]):
             {"id": order['id']},
             {"$set": {
                 "paid_amount": new_paid_amount,
-                "pending_amount": order['total_amount'] - new_paid_amount,
+                "pending_amount": normalize_pending(order['total_amount'] - new_paid_amount),
                 "lifecycle_status": "active",
                 "status": OrderStatus.CONFIRMED,
                 "updated_at": datetime.now(timezone.utc).isoformat()
@@ -5207,7 +5218,7 @@ async def record_payment(
     
     # Update order paid amount
     new_paid_amount = order['paid_amount'] + payment_data.amount
-    new_pending_amount = order['total_amount'] - new_paid_amount
+    new_pending_amount = normalize_pending(order['total_amount'] - new_paid_amount)
     
     update_data = {
         "paid_amount": new_paid_amount,

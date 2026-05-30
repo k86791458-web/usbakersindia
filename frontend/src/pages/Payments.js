@@ -28,13 +28,13 @@ const Payments = () => {
     setCurrentPage(1);
   }, [activeTab, filterOutlet]);
 
-  // Filtered list based on active tab
+  // Filtered list based on active tab — ignore dust (< ₹1) as fully paid
   const filteredPayments = activeTab === 'pending'
-    ? paymentsData.filter((o) => (o.pending_amount || 0) > 0)
+    ? paymentsData.filter((o) => (o.pending_amount || 0) >= 1)
     : paymentsData;
 
-  const totalPendingAmount = paymentsData.reduce((sum, o) => sum + (o.pending_amount || 0), 0);
-  const pendingOrdersCount = paymentsData.filter((o) => (o.pending_amount || 0) > 0).length;
+  const totalPendingAmount = paymentsData.reduce((sum, o) => sum + ((o.pending_amount || 0) >= 1 ? o.pending_amount : 0), 0);
+  const pendingOrdersCount = paymentsData.filter((o) => (o.pending_amount || 0) >= 1).length;
 
   useEffect(() => {
     fetchOutlets();
