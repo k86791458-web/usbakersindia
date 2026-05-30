@@ -1,7 +1,11 @@
 import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
+from dotenv import load_dotenv
+from pathlib import Path
 import os
+
+load_dotenv(Path(__file__).parent / ".env")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
