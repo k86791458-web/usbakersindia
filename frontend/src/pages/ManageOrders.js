@@ -138,6 +138,19 @@ const ManageOrders = () => {
   const [selectedDeliveryPerson, setSelectedDeliveryPerson] = useState('');
   const [assigning, setAssigning] = useState(false);
 
+  // Group B — Add Delivery wizard
+  const [addDeliveryOpen, setAddDeliveryOpen] = useState(false);
+  const [addDeliveryOrder, setAddDeliveryOrder] = useState(null);
+  const [addDeliveryStep, setAddDeliveryStep] = useState(1);
+  const [addDeliveryZones, setAddDeliveryZones] = useState([]);
+  const [addDeliveryCities, setAddDeliveryCities] = useState([]);
+  const [addDeliveryData, setAddDeliveryData] = useState({
+    zone_id: '', delivery_charge: '', is_complementary: false,
+    receiver_name: '', receiver_phone: '', delivery_address: '', delivery_city: '',
+    assign_delivery_person_id: ''
+  });
+  const [addingDelivery, setAddingDelivery] = useState(false);
+
   // Delete order with reason
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteOrder, setDeleteOrder] = useState(null);
@@ -264,6 +277,75 @@ const ManageOrders = () => {
       setMessage({ type: 'error', text: error.response?.data?.detail || 'Failed to assign delivery' });
     } finally {
       setAssigning(false);
+    }
+  };
+
+  // Group B — Add Delivery wizard
+  const openAddDeliveryWizard = async (order) => {
+    setAddDeliveryOrder(order);
+    setAddDeliveryStep(1);
+    setAddDeliveryData({
+      zone_id: '', delivery_charge: '', is_complementary: false,
+      receiver_name: order?.customer_info?.name || '',
+      receiver_phone: order?.customer_info?.phone || '',
+      delivery_address: order?.delivery_address || '',
+      delivery_city: order?.delivery_city || '',
+      assign_delivery_person_id: ''
+    });
+    setAddDeliveryOpen(true);
+    try {
+      const [zRes, cRes, dRes] = await Promise.all([
+        axios.get(`${API_URL}/api/zones?outlet_id=${order.outlet_id}`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`${API_URL}/api/cities`, { headers: { Authorization: `Bearer ${token}` } }),
+        axios.get(`${API_URL}/api/delivery/persons`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      setAddDeliveryZones(zRes.data || []);
+      setAddDeliveryCities(cRes.data || []);
+      setDeliveryPersons(dRes.data || []);
+    } catch (err) {
+      console.error('Failed to load wizard data', err);
+    }
+  };
+
+  const submitAddDelivery = async () => {
+    if (!addDeliveryOrder) return;
+    // Validate
+    if (!addDeliveryData.zone_id) return setMessage({ type: 'error', text: 'Please select a zone' });
+    if (!addDeliveryData.is_complementary && addDeliveryData.zone_id === 'custom' && !addDeliveryData.delivery_charge)
+      return setMessage({ type: 'error', text: 'Please enter delivery charge' });
+    if (!addDeliveryData.delivery_address) return setMessage({ type: 'error', text: 'Please enter delivery address' });
+    if (!addDeliveryData.delivery_city) return setMessage({ type: 'error', text: 'Please select a city' });
+    if (!addDeliveryData.receiver_phone) return setMessage({ type: 'error', text: 'Please enter receiver phone' });
+
+    setAddingDelivery(true);
+    try {
+      const payload = {
+        zone_id: addDeliveryData.zone_id,
+        is_complementary: !!addDeliveryData.is_complementary,
+        delivery_charge: addDeliveryData.is_complementary ? 0 : parseFloat(addDeliveryData.delivery_charge || 0),
+        delivery_address: addDeliveryData.delivery_address,
+        delivery_city: addDeliveryData.delivery_city,
+        receiver_info: {
+          name: addDeliveryData.receiver_name,
+          phone: addDeliveryData.receiver_phone,
+          address: addDeliveryData.delivery_address,
+          city: addDeliveryData.delivery_city,
+        },
+        ...(addDeliveryData.assign_delivery_person_id ? { assign_delivery_person_id: addDeliveryData.assign_delivery_person_id } : {})
+      };
+      await axios.post(
+        `${API_URL}/api/orders/${addDeliveryOrder.id}/add-delivery`,
+        payload,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setAddDeliveryOpen(false);
+      setMessage({ type: 'success', text: 'Delivery added to order' });
+      fetchOrders();
+      setTimeout(() => setMessage({ type: '', text: '' }), 5000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to add delivery' });
+    } finally {
+      setAddingDelivery(false);
     }
   };
 
@@ -1523,36 +1605,26 @@ const ManageOrders = () => {
                             <TableCell>{getStatusBadge(order.status)}</TableCell>
                             <TableCell className="text-right">
                               <div className="flex justify-end items-center space-x-2">
-                                {/* Photo Upload Button */}
+                                {/* Group B: Single "Upload Image" button — replaces the previous Upload + Ready-to-Deliver pair.
+                                    Uses camera capture flow which also marks the order as ready_to_deliver. */}
                                 {order.is_ready && !order.actual_cake_image_url && (
                                   <Button
                                     size="sm"
-                                    onClick={() => openPhotoUploadModal(order)}
-                                    className="bg-purple-600 hover:bg-purple-700 text-white"
-                                    title="Upload Actual Cake Photo"
+                                    className="bg-cyan-600 hover:bg-cyan-700 text-white text-xs"
+                                    onClick={() => openCameraForDelivery(order.id)}
+                                    data-testid={`upload-image-btn-${order.id}`}
+                                    title="Capture or upload cake photo → auto-marks Ready to Deliver"
                                   >
-                                    <Upload className="h-4 w-4" />
+                                    <Upload className="h-3 w-3 mr-1" />
+                                    Upload Image
                                   </Button>
                                 )}
                                 {order.actual_cake_image_url && (
                                   <Badge className="bg-green-600 text-white text-xs">✓ Photo</Badge>
                                 )}
-                                
-                                {/* Ready to Deliver Button - Camera capture */}
-                                {order.status === 'ready' && !order.actual_cake_image_url && (
-                                  <Button
-                                    size="sm"
-                                    className="bg-cyan-600 hover:bg-cyan-700 text-white text-xs"
-                                    onClick={() => openCameraForDelivery(order.id)}
-                                    data-testid={`ready-to-deliver-btn-${order.id}`}
-                                  >
-                                    <Upload className="h-3 w-3 mr-1" />
-                                    Ready to Deliver
-                                  </Button>
-                                )}
 
                                 {/* Assign Delivery Person Button */}
-                                {order.status === 'ready_to_deliver' && !order.assigned_delivery_partner && (
+                                {order.status === 'ready_to_deliver' && !order.assigned_delivery_partner && order.needs_delivery && (
                                   <Button
                                     size="sm"
                                     className="bg-purple-600 hover:bg-purple-700 text-white text-xs"
@@ -1561,6 +1633,20 @@ const ManageOrders = () => {
                                   >
                                     <Truck className="h-3 w-3 mr-1" />
                                     Assign Delivery
+                                  </Button>
+                                )}
+
+                                {/* Group B: Add Delivery — for orders that don't have delivery yet */}
+                                {order.status === 'ready_to_deliver' && !order.needs_delivery && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="text-xs border-orange-400 text-orange-700 hover:bg-orange-50"
+                                    onClick={() => openAddDeliveryWizard(order)}
+                                    data-testid={`add-delivery-btn-${order.id}`}
+                                  >
+                                    <Truck className="h-3 w-3 mr-1" />
+                                    Add Delivery
                                   </Button>
                                 )}
 
@@ -2437,6 +2523,195 @@ const ManageOrders = () => {
                 {assigning ? 'Assigning...' : 'Assign & Dispatch'}
               </Button>
             </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Group B — Add Delivery Wizard Dialog */}
+        <Dialog open={addDeliveryOpen} onOpenChange={setAddDeliveryOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Add Delivery to Order</DialogTitle>
+              <DialogDescription>
+                {addDeliveryOrder?.order_number && `Order #${addDeliveryOrder.order_number} • `}
+                Step {addDeliveryStep} of 4
+              </DialogDescription>
+            </DialogHeader>
+
+            {/* Step 1 — Zone */}
+            {addDeliveryStep === 1 && (
+              <div className="space-y-4 py-2">
+                <div>
+                  <Label>Delivery Zone *</Label>
+                  <Select
+                    value={addDeliveryData.zone_id}
+                    onValueChange={(v) => setAddDeliveryData({ ...addDeliveryData, zone_id: v })}
+                  >
+                    <SelectTrigger data-testid="add-delivery-zone-select">
+                      <SelectValue placeholder="Select zone" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {addDeliveryZones.map((z) => (
+                        <SelectItem key={z.id} value={z.id}>
+                          {z.name} — ₹{z.delivery_charge}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="custom">Custom Delivery Charge</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex justify-end">
+                  <Button
+                    onClick={() => setAddDeliveryStep(2)}
+                    disabled={!addDeliveryData.zone_id}
+                    data-testid="add-delivery-step1-next"
+                  >
+                    Next →
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 2 — Charges */}
+            {addDeliveryStep === 2 && (
+              <div className="space-y-4 py-2">
+                <div className="flex items-center gap-2">
+                  <input
+                    id="is-complementary"
+                    type="checkbox"
+                    checked={addDeliveryData.is_complementary}
+                    onChange={(e) => setAddDeliveryData({ ...addDeliveryData, is_complementary: e.target.checked, delivery_charge: e.target.checked ? 0 : addDeliveryData.delivery_charge })}
+                    data-testid="add-delivery-complementary"
+                  />
+                  <Label htmlFor="is-complementary">Complementary delivery (₹0)</Label>
+                </div>
+                {!addDeliveryData.is_complementary && (
+                  <div>
+                    <Label>Delivery Charge (multiple of ₹50) *</Label>
+                    <Input
+                      type="number"
+                      step="50"
+                      min="0"
+                      placeholder="e.g., 50, 100, 150"
+                      value={addDeliveryData.delivery_charge}
+                      onChange={(e) => setAddDeliveryData({ ...addDeliveryData, delivery_charge: e.target.value })}
+                      data-testid="add-delivery-charge-input"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Amount must be a multiple of ₹50 or check {'"'}Complementary{'"'} above.</p>
+                  </div>
+                )}
+                <div className="flex justify-between">
+                  <Button variant="outline" onClick={() => setAddDeliveryStep(1)}>← Back</Button>
+                  <Button
+                    onClick={() => setAddDeliveryStep(3)}
+                    disabled={!addDeliveryData.is_complementary && !addDeliveryData.delivery_charge}
+                    data-testid="add-delivery-step2-next"
+                  >
+                    Next →
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 3 — Receiver */}
+            {addDeliveryStep === 3 && (
+              <div className="space-y-3 py-2">
+                <div>
+                  <Label>Receiver Name</Label>
+                  <Input
+                    value={addDeliveryData.receiver_name}
+                    onChange={(e) => setAddDeliveryData({ ...addDeliveryData, receiver_name: e.target.value })}
+                    placeholder="Same as customer if left blank"
+                    data-testid="add-delivery-receiver-name"
+                  />
+                </div>
+                <div>
+                  <Label>Receiver Phone *</Label>
+                  <Input
+                    value={addDeliveryData.receiver_phone}
+                    onChange={(e) => setAddDeliveryData({ ...addDeliveryData, receiver_phone: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                    placeholder="10-digit phone"
+                    data-testid="add-delivery-receiver-phone"
+                  />
+                </div>
+                <div>
+                  <Label>Delivery Address *</Label>
+                  <Textarea
+                    rows={2}
+                    value={addDeliveryData.delivery_address}
+                    onChange={(e) => setAddDeliveryData({ ...addDeliveryData, delivery_address: e.target.value })}
+                    data-testid="add-delivery-address"
+                  />
+                </div>
+                <div>
+                  <Label>City *</Label>
+                  <Select
+                    value={addDeliveryData.delivery_city}
+                    onValueChange={(v) => setAddDeliveryData({ ...addDeliveryData, delivery_city: v })}
+                  >
+                    <SelectTrigger data-testid="add-delivery-city-select">
+                      <SelectValue placeholder="Select city" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {addDeliveryCities.map((c) => (
+                        <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {addDeliveryCities.length === 0 && (
+                    <p className="text-xs text-red-500 mt-1">No cities configured. Add cities in Settings.</p>
+                  )}
+                </div>
+                <div className="flex justify-between">
+                  <Button variant="outline" onClick={() => setAddDeliveryStep(2)}>← Back</Button>
+                  <Button
+                    onClick={() => setAddDeliveryStep(4)}
+                    disabled={!addDeliveryData.receiver_phone || !addDeliveryData.delivery_address || !addDeliveryData.delivery_city}
+                    data-testid="add-delivery-step3-next"
+                  >
+                    Next →
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Step 4 — Assign */}
+            {addDeliveryStep === 4 && (
+              <div className="space-y-4 py-2">
+                <div>
+                  <Label>Assign Delivery Person (optional)</Label>
+                  <Select
+                    value={addDeliveryData.assign_delivery_person_id}
+                    onValueChange={(v) => setAddDeliveryData({ ...addDeliveryData, assign_delivery_person_id: v })}
+                  >
+                    <SelectTrigger data-testid="add-delivery-person-select">
+                      <SelectValue placeholder="Assign now or later" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {deliveryPersons.map((dp) => (
+                        <SelectItem key={dp.id} value={dp.id}>{dp.name} ({dp.phone})</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="rounded border p-3 bg-gray-50 text-sm space-y-1">
+                  <div>Zone: <strong>{addDeliveryZones.find(z => z.id === addDeliveryData.zone_id)?.name || 'Custom'}</strong></div>
+                  <div>Charge: <strong>{addDeliveryData.is_complementary ? 'Complementary (₹0)' : `₹${addDeliveryData.delivery_charge}`}</strong></div>
+                  <div>Receiver: <strong>{addDeliveryData.receiver_name || '—'} ({addDeliveryData.receiver_phone})</strong></div>
+                  <div>Address: {addDeliveryData.delivery_address}, {addDeliveryData.delivery_city}</div>
+                </div>
+                <div className="flex justify-between">
+                  <Button variant="outline" onClick={() => setAddDeliveryStep(3)}>← Back</Button>
+                  <Button
+                    onClick={submitAddDelivery}
+                    disabled={addingDelivery}
+                    className="bg-orange-600 hover:bg-orange-700 text-white"
+                    data-testid="submit-add-delivery"
+                  >
+                    {addingDelivery ? 'Adding...' : 'Add Delivery'}
+                  </Button>
+                </div>
+              </div>
+            )}
           </DialogContent>
         </Dialog>
 

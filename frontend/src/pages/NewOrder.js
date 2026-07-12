@@ -40,6 +40,7 @@ const NewOrder = () => {
   const { user } = useAuth();
   const [outlets, setOutlets] = useState([]);
   const [zones, setZones] = useState([]);
+  const [cities, setCities] = useState([]);
   const [salesPersons, setSalesPersons] = useState([]);
   const [flavours, setFlavours] = useState([]);
   const [occasions, setOccasions] = useState([]);
@@ -159,6 +160,19 @@ const NewOrder = () => {
       console.error('Failed to fetch outlets:', error);
     }
   };
+
+  // Fetch delivery cities (Group B)
+  useEffect(() => {
+    (async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const res = await axios.get(`${API}/cities`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {}
+        });
+        setCities(res.data || []);
+      } catch (_) { /* non-blocking */ }
+    })();
+  }, []);
 
   const fetchZones = async (outletId) => {
     try {
@@ -760,11 +774,31 @@ const NewOrder = () => {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <Label>City *</Label>
-                      <Input
-                        required
-                        value={formData.delivery_city}
-                        onChange={(e) => setFormData({ ...formData, delivery_city: e.target.value })}
-                      />
+                      {cities.length > 0 ? (
+                        <Select
+                          value={formData.delivery_city}
+                          onValueChange={(value) => setFormData({ ...formData, delivery_city: value })}
+                        >
+                          <SelectTrigger data-testid="delivery-city-select">
+                            <SelectValue placeholder="Select city" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {cities.map((c) => (
+                              <SelectItem key={c.id} value={c.name}>
+                                {c.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Input
+                          required
+                          value={formData.delivery_city}
+                          onChange={(e) => setFormData({ ...formData, delivery_city: e.target.value })}
+                          placeholder="City (add cities in Settings)"
+                          data-testid="delivery-city-input-fallback"
+                        />
+                      )}
                     </div>
                     <div>
                       <Label>Zone</Label>

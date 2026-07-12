@@ -3,9 +3,11 @@ import { useAuth } from '../contexts/AuthContext';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import {
   Truck, MapPin, Phone, User, Clock, Package,
-  CheckCircle, LogOut, Navigation, RefreshCw, DollarSign, CreditCard
+  CheckCircle, LogOut, Navigation, RefreshCw, DollarSign, CreditCard, KeyRound
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -16,6 +18,13 @@ const DeliveryDashboard = () => {
   const [activeTab, setActiveTab] = useState('available');
   const [availableOrders, setAvailableOrders] = useState([]);
   const [myOrders, setMyOrders] = useState([]);
+
+  // Group B — OTP verification dialog state
+  const [otpDialogOpen, setOtpDialogOpen] = useState(false);
+  const [otpOrderId, setOtpOrderId] = useState(null);
+  const [otpValue, setOtpValue] = useState('');
+  const [otpError, setOtpError] = useState('');
+  const [verifyingOtp, setVerifyingOtp] = useState(false);
 
   const getImageUrl = (url) => {
     if (!url) return '';
@@ -75,6 +84,36 @@ const DeliveryDashboard = () => {
       fetchOrders();
     } catch (err) {
       alert(err.response?.data?.detail || 'Failed to update status');
+    }
+  };
+
+  // Group B — Open OTP dialog before marking delivered
+  const openOtpDialog = (orderId) => {
+    setOtpOrderId(orderId);
+    setOtpValue('');
+    setOtpError('');
+    setOtpDialogOpen(true);
+  };
+
+  const verifyOtpAndDeliver = async () => {
+    if (!otpOrderId || otpValue.length !== 6) {
+      setOtpError('Please enter the 6-digit OTP shared with the customer');
+      return;
+    }
+    setVerifyingOtp(true);
+    setOtpError('');
+    try {
+      await axios.post(
+        `${API_URL}/api/delivery/verify-otp`,
+        { order_id: otpOrderId, otp: otpValue },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setOtpDialogOpen(false);
+      fetchOrders();
+    } catch (err) {
+      setOtpError(err.response?.data?.detail || 'Invalid OTP');
+    } finally {
+      setVerifyingOtp(false);
     }
   };
 
@@ -165,19 +204,33 @@ const DeliveryDashboard = () => {
             </div>
           )}
 
-          {/* Customer Info */}
-          <div className="space-y-2 mb-3">
-            <div className="flex items-center gap-2 text-sm">
-              <User className="h-4 w-4 text-gray-400" />
-              <span className="font-medium">{order.customer_info?.name}</span>
-            </div>
-            {order.customer_info?.phone && (
-              <a href={`tel:${order.customer_info.phone}`} className="flex items-center gap-2 text-sm text-blue-600">
-                <Phone className="h-4 w-4" />
-                {order.customer_info.phone}
-              </a>
-            )}
-          </div>
+          {/* Group B — Primary Contact: Receiver info takes precedence when present */}
+          {(() => {
+            const primary = (order.receiver_info && order.receiver_info.phone) ? order.receiver_info : (order.customer_info || {});
+            const isReceiver = !!(order.receiver_info && order.receiver_info.phone);
+            return (
+              <div className="space-y-2 mb-3" data-testid={`primary-contact-${order.id}`}>
+                <div className="flex items-center gap-2 text-sm">
+                  <User className="h-4 w-4 text-gray-400" />
+                  <span className="font-medium">{primary.name || '—'}</span>
+                  {isReceiver && (
+                    <Badge className="text-[10px] bg-orange-100 text-orange-700 border-orange-200">Receiver</Badge>
+                  )}
+                </div>
+                {primary.phone && (
+                  <a href={`tel:${primary.phone}`} className="flex items-center gap-2 text-sm text-blue-600">
+                    <Phone className="h-4 w-4" />
+                    {primary.phone}
+                  </a>
+                )}
+                {isReceiver && order.customer_info?.phone && order.customer_info.phone !== primary.phone && (
+                  <div className="text-xs text-gray-500 pl-6">
+                    Customer: {order.customer_info?.name} — <a href={`tel:${order.customer_info.phone}`} className="text-blue-600">{order.customer_info.phone}</a>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Order details */}
           <div className="bg-gray-50 rounded-lg p-3 mb-3 text-sm space-y-1">
@@ -245,11 +298,11 @@ const DeliveryDashboard = () => {
               </a>
               <Button
                 className="flex-1 bg-green-600 hover:bg-green-700 text-white"
-                onClick={() => updateDeliveryStatus(order.id, 'delivered')}
+                onClick={() => openOtpDialog(order.id)}
                 data-testid={`mark-delivered-btn-${order.id}`}
               >
-                <CheckCircle className="h-4 w-4 mr-2" />
-                Delivered
+                <KeyRound className="h-4 w-4 mr-2" />
+                Verify & Deliver
               </Button>
             </div>
           )}
@@ -372,6 +425,39 @@ const DeliveryDashboard = () => {
       >
         <RefreshCw className="h-5 w-5" />
       </button>
+
+      {/* Group B — OTP verification dialog */}
+      <Dialog open={otpDialogOpen} onOpenChange={setOtpDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Verify Customer OTP</DialogTitle>
+            <DialogDescription>
+              Ask the customer for the 6-digit OTP shared on WhatsApp / SMS, then enter it below to complete the delivery.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <Input
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              placeholder="Enter 6-digit OTP"
+              value={otpValue}
+              onChange={(e) => { setOtpValue(e.target.value.replace(/\D/g, '').slice(0, 6)); setOtpError(''); }}
+              className="text-center tracking-[0.4em] font-mono text-lg"
+              data-testid="delivery-otp-input"
+            />
+            {otpError && <p className="text-sm text-red-600" data-testid="delivery-otp-error">{otpError}</p>}
+            <Button
+              className="w-full bg-green-600 hover:bg-green-700 text-white"
+              onClick={verifyOtpAndDeliver}
+              disabled={verifyingOtp || otpValue.length !== 6}
+              data-testid="verify-otp-btn"
+            >
+              {verifyingOtp ? 'Verifying...' : 'Verify & Mark Delivered'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

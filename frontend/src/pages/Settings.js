@@ -53,6 +53,10 @@ const Settings = () => {
   const [occasions, setOccasions] = useState([]);
   const [newOccasion, setNewOccasion] = useState('');
 
+  // Cities (Group B — delivery city dropdown)
+  const [cities, setCities] = useState([]);
+  const [newCity, setNewCity] = useState('');
+
   // Time Slots
   const [timeSlots, setTimeSlots] = useState([]);
   const [slotStartHour, setSlotStartHour] = useState('10');
@@ -95,6 +99,12 @@ const Settings = () => {
       // Fetch occasions
       const occasionsRes = await axios.get(`${API}/occasions`);
       setOccasions(occasionsRes.data);
+
+      // Fetch cities (Group B)
+      try {
+        const citiesRes = await axios.get(`${API}/cities`, { headers: { Authorization: `Bearer ${token}` } });
+        setCities(citiesRes.data || []);
+      } catch (_) { /* cities API may 403 for non-super, ignore */ }
 
       // Fetch time slots
       const slotsRes = await axios.get(`${API}/time-slots`);
@@ -244,6 +254,41 @@ const Settings = () => {
       showSuccess('Occasion deleted successfully');
     } catch (error) {
       showError('Failed to delete occasion');
+    }
+  };
+
+  // ==================== CITIES (Group B) ====================
+  const addCity = async () => {
+    if (!newCity.trim()) {
+      showError('Please enter city name');
+      return;
+    }
+    const token = localStorage.getItem('token');
+    setLoading(true);
+    try {
+      await axios.post(`${API}/cities`, { name: newCity.trim() }, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setNewCity('');
+      fetchAllSettings();
+      showSuccess('City added');
+    } catch (error) {
+      showError(error.response?.data?.detail || 'Failed to add city');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deleteCity = async (cityId) => {
+    const token = localStorage.getItem('token');
+    try {
+      await axios.delete(`${API}/cities/${cityId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      fetchAllSettings();
+      showSuccess('City deleted');
+    } catch (error) {
+      showError(error.response?.data?.detail || 'Failed to delete city');
     }
   };
 
@@ -691,6 +736,68 @@ const Settings = () => {
               </Table>
             ) : (
               <p className="text-sm text-gray-500 text-center py-4">No occasions added yet</p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* SECTION 4b: Delivery Cities (Group B) */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Delivery Cities</CardTitle>
+            <p className="text-sm text-gray-500">
+              Cities configured here appear as a dropdown in the delivery address on New Order and Add Delivery.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex gap-4">
+              <Input
+                placeholder="Enter city name (e.g., Chennai, Coimbatore)"
+                value={newCity}
+                onChange={(e) => setNewCity(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && addCity()}
+                data-testid="new-city-input"
+              />
+              <Button
+                onClick={addCity}
+                disabled={loading}
+                className="text-white whitespace-nowrap"
+                style={{ backgroundColor: '#e92587' }}
+                data-testid="add-city-btn"
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add City
+              </Button>
+            </div>
+
+            {cities.length > 0 ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>City</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {cities.map((city) => (
+                    <TableRow key={city.id} data-testid={`city-row-${city.name}`}>
+                      <TableCell>{city.name}</TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => deleteCity(city.id)}
+                          className="text-red-600 hover:text-red-700"
+                          data-testid={`delete-city-${city.name}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <p className="text-sm text-gray-500 text-center py-4">No cities added yet</p>
             )}
           </CardContent>
         </Card>

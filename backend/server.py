@@ -14,6 +14,7 @@ from enum import Enum
 import os
 import logging
 import uuid
+import re
 import requests
 import random
 import secrets
@@ -1977,7 +1978,10 @@ async def create_zone(
     outlet = await db.outlets.find_one({"id": zone_data.outlet_id}, {"_id": 0})
     if not outlet:
         raise HTTPException(status_code=404, detail="Outlet not found")
-    
+
+    # Group B: delivery charge must be 0 (complementary) or multiple of ₹50
+    _validate_delivery_charge(zone_data.delivery_charge)
+
     zone = Zone(
         outlet_id=zone_data.outlet_id,
         name=zone_data.name,
@@ -2069,6 +2073,94 @@ async def delete_zone(
     await db.zones.delete_one({"id": zone_id})
     
     return {"message": "Zone deleted successfully"}
+
+
+# ==================== DELIVERY CITIES (Super Admin managed) ====================
+
+def _validate_delivery_charge(charge: Optional[float], is_complementary: bool = False) -> None:
+    """Enforce that delivery_charge is either 0 (complementary) or a multiple of ₹50."""
+    if charge is None:
+        return
+    try:
+        val = float(charge)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Delivery charge must be a number")
+    if is_complementary or val == 0:
+        return
+    if val < 0:
+        raise HTTPException(status_code=400, detail="Delivery charge cannot be negative")
+    # allow up to ₹0.01 tolerance in modulo
+    if abs(val - round(val / 50) * 50) > 0.01:
+        raise HTTPException(status_code=400, detail="Delivery charge must be a multiple of ₹50 (or 0 for complementary)")
+
+
+@api_router.get("/cities")
+async def list_cities(current_user: User = Depends(get_current_user)):
+    """List active delivery cities (visible to all authenticated users)."""
+    docs = await db.cities.find({"is_active": True}, {"_id": 0}).sort("name", 1).to_list(500)
+    return docs
+
+
+@api_router.post("/cities")
+async def create_city(
+    payload: Dict[str, Any],
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Add a new delivery city (Super Admin only)."""
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="City name is required")
+    existing = await db.cities.find_one({"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}, {"_id": 0})
+    if existing:
+        raise HTTPException(status_code=400, detail="City already exists")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "is_active": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": current_user.id,
+    }
+    await db.cities.insert_one(doc)
+    doc.pop("_id", None)
+    return {"message": "City added", "city": doc}
+
+
+@api_router.patch("/cities/{city_id}")
+async def update_city(
+    city_id: str,
+    payload: Dict[str, Any],
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Update city name or active flag."""
+    city = await db.cities.find_one({"id": city_id}, {"_id": 0})
+    if not city:
+        raise HTTPException(status_code=404, detail="City not found")
+    update = {}
+    if "name" in payload and payload["name"]:
+        update["name"] = payload["name"].strip()
+    if "is_active" in payload:
+        update["is_active"] = bool(payload["is_active"])
+    if not update:
+        return {"message": "No changes"}
+    await db.cities.update_one({"id": city_id}, {"$set": update})
+    return {"message": "City updated"}
+
+
+@api_router.delete("/cities/{city_id}")
+async def delete_city(
+    city_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    """Delete a city. Blocked if any active order references it."""
+    city = await db.cities.find_one({"id": city_id}, {"_id": 0})
+    if not city:
+        raise HTTPException(status_code=404, detail="City not found")
+    in_use = await db.orders.find_one({"delivery_city": city["name"], "is_deleted": False}, {"_id": 0})
+    if in_use:
+        raise HTTPException(status_code=400, detail="City is used by active orders — mark inactive instead.")
+    await db.cities.delete_one({"id": city_id})
+    return {"message": "City deleted"}
+
 
 # ==================== IMAGE UPLOAD ====================
 
@@ -2199,6 +2291,9 @@ async def create_order(
         else:
             # Custom zone - delivery charge handled separately
             delivery_charge = order_data.custom_delivery_charge if hasattr(order_data, 'custom_delivery_charge') else 0.0
+
+    # Group B: delivery charge must be 0 (complementary) or a multiple of ₹50
+    _validate_delivery_charge(delivery_charge)
     
     # Calculate total amount (cake + delivery)
     total_amount = order_data.total_amount + delivery_charge
@@ -2673,7 +2768,11 @@ async def update_order(
         if field in update_data:
             update_fields[field] = update_data[field]
 
-    # Recalculate pending_amount when total_amount or delivery_charge changes
+    # Group B: enforce delivery_charge modulo ₹50 (or 0) if edited
+    if 'delivery_charge' in update_fields:
+        _validate_delivery_charge(update_fields['delivery_charge'])
+    if 'custom_delivery_charge' in update_fields:
+        _validate_delivery_charge(update_fields['custom_delivery_charge'])
     if 'total_amount' in update_data or 'delivery_charge' in update_data:
         base_total = float(update_data.get('total_amount', order.get('total_amount') or 0))
         # delivery_charge if provided replaces existing; else keep existing.
@@ -2859,6 +2958,134 @@ async def download_orders_pdf(
     
     except Exception as e:
         logger.error(f"PDF generation failed: {str(e)}")
+
+@api_router.post("/orders/{order_id}/add-delivery")
+async def add_delivery_to_order(
+    order_id: str,
+    payload: Dict[str, Any],
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
+):
+    """Group B (P0): Convert a non-delivery / delivery-not-yet-configured order into a delivery order.
+    Wizard steps done by the client: Zone → Charges → Receiver → Assign.
+
+    Payload:
+      zone_id: str (required — use "custom" for a custom zone)
+      delivery_charge: number (0 for complementary; otherwise multiple of ₹50) — used for zone_id="custom" or override
+      is_complementary: bool (optional)
+      receiver_info: {name, phone, address, city?} (optional; falls back to customer_info)
+      delivery_address: str (optional; falls back to receiver_info.address)
+      delivery_city: str (optional; falls back to receiver_info.city)
+      assign_delivery_person_id: str (optional; assigns immediately if the order is ready_to_deliver)
+    """
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    zone_id = payload.get("zone_id")
+    if not zone_id:
+        raise HTTPException(status_code=400, detail="zone_id is required")
+
+    is_complementary = bool(payload.get("is_complementary"))
+    delivery_charge_input = payload.get("delivery_charge")
+    receiver_info = payload.get("receiver_info") or None
+    delivery_address = payload.get("delivery_address") or (receiver_info or {}).get("address")
+    delivery_city = payload.get("delivery_city") or (receiver_info or {}).get("city")
+
+    # Resolve delivery charge
+    if is_complementary:
+        delivery_charge = 0.0
+    elif zone_id == "custom":
+        if delivery_charge_input is None:
+            raise HTTPException(status_code=400, detail="delivery_charge is required for custom zone")
+        delivery_charge = float(delivery_charge_input)
+    else:
+        zone = await db.zones.find_one({"id": zone_id}, {"_id": 0})
+        if not zone:
+            raise HTTPException(status_code=404, detail="Zone not found")
+        delivery_charge = float(delivery_charge_input) if delivery_charge_input is not None else float(zone.get("delivery_charge") or 0)
+
+    _validate_delivery_charge(delivery_charge, is_complementary)
+
+    # Ensure OTP exists (for later customer verification on delivery)
+    delivery_otp = order.get("delivery_otp") or str(random.randint(100000, 999999))
+
+    # Recalculate pending. total_amount already had cake+delivery baked in; add delta.
+    old_delivery = float(order.get("delivery_charge") or 0)
+    delta = delivery_charge - old_delivery
+    new_total = float(order.get("total_amount") or 0) + delta
+    paid_amount = float(order.get("paid_amount") or 0)
+    new_pending = normalize_pending(new_total - paid_amount)
+
+    update_fields = {
+        "needs_delivery": True,
+        "zone_id": zone_id,
+        "delivery_charge": delivery_charge,
+        "custom_delivery_charge": delivery_charge if zone_id == "custom" else None,
+        "delivery_address": delivery_address,
+        "delivery_city": delivery_city,
+        "receiver_info": receiver_info,
+        "delivery_otp": delivery_otp,
+        "total_amount": new_total,
+        "pending_amount": new_pending,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    await db.orders.update_one({"id": order_id}, {"$set": update_fields})
+
+    # Optional immediate assignment (only if the order is already ready_to_deliver)
+    assigned = None
+    assign_id = payload.get("assign_delivery_person_id")
+    if assign_id:
+        if order.get("status") != "ready_to_deliver":
+            logger.info(f"add-delivery: skip assign because order status is {order.get('status')}")
+        else:
+            delivery_user = await db.users.find_one(
+                {"id": assign_id, "role": "delivery", "is_active": True}, {"_id": 0}
+            )
+            if delivery_user:
+                await db.orders.update_one(
+                    {"id": order_id},
+                    {"$set": {
+                        "assigned_delivery_partner": assign_id,
+                        "status": "picked_up",
+                        "assigned_by": current_user.id,
+                        "assigned_at": datetime.now(timezone.utc).isoformat(),
+                    }}
+                )
+                assigned = delivery_user.get("name")
+
+    # Activity log
+    try:
+        await create_activity_log(
+            user=current_user,
+            action_type="delivery_added",
+            description=f"Added delivery to order {order.get('order_number', order_id)} (zone={zone_id}, charge=₹{delivery_charge:.0f})",
+            entity_type="order",
+            entity_id=order_id,
+            order_number=order.get('order_number'),
+            outlet_id=order.get('outlet_id'),
+            before_data={k: order.get(k) for k in update_fields.keys()},
+            after_data=update_fields,
+        )
+    except Exception as _e:
+        logger.error(f"activity_log failed (add-delivery): {_e}")
+
+    # WhatsApp update
+    try:
+        background_tasks.add_task(send_whatsapp_notification, order_id, WhatsAppTemplateEvent.ORDER_UPDATED)
+    except Exception as _e:
+        logger.error(f"failed to queue WhatsApp for add-delivery {order_id}: {_e}")
+
+    return {
+        "message": "Delivery added",
+        "delivery_charge": delivery_charge,
+        "delivery_otp": delivery_otp,
+        "total_amount": new_total,
+        "pending_amount": new_pending,
+        "assigned_to": assigned,
+    }
+
 
 @api_router.post("/orders/{order_id}/mark-ready")
 async def mark_order_ready(
