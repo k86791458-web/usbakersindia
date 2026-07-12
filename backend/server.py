@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, UploadFile, File, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, UploadFile, File, Request, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -574,6 +574,7 @@ class WhatsAppTemplateEvent(str, Enum):
     ORDER_READY = "order_ready"
     OUT_FOR_DELIVERY = "out_for_delivery"
     DELIVERED = "delivered"
+    ORDER_UPDATED = "order_updated"
 
 class WhatsAppTemplate(BaseModel):
     """Configuration for a WhatsApp template for a specific event"""
@@ -2503,6 +2504,8 @@ async def delete_order(
                 "delete_requested_by": current_user.id,
                 "delete_reason": reason.strip(),
                 "delete_status": "approved",
+                "deleted_from_status": order.get('status'),
+                "deleted_from_lifecycle_status": order.get('lifecycle_status'),
             }}
         )
         try:
@@ -2557,6 +2560,8 @@ async def approve_delete_order(
             "deleted_by": current_user.id,
             "delete_approved_by": current_user.id,
             "delete_status": "approved",
+            "deleted_from_status": order.get('status'),
+            "deleted_from_lifecycle_status": order.get('lifecycle_status'),
         }}
     )
     return {"message": "Delete approved"}
@@ -2615,71 +2620,93 @@ async def get_deleted_orders(
 async def update_order(
     order_id: str,
     update_data: Dict[str, Any],
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
 ):
-    """Update order details (before ready status)"""
+    """Update order details.
+
+    Super Admin can edit any order at any stage (including after Ready).
+    Other roles cannot edit an order after it's marked as ready.
+    Every change is captured in the activity log with old→new diff, and a
+    WhatsApp ORDER_UPDATED notification is fired to the customer.
+    """
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
-    # Check if order is already ready
-    if order.get('is_ready'):
-        raise HTTPException(status_code=400, detail="Cannot edit order after it's marked as ready")
-    
+
+    # Only non-super-admins are locked out after Ready
+    if order.get('is_ready') and current_user.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=400, detail="Cannot edit order after it's marked as ready. Contact Super Admin.")
+
     # Track modification
     update_fields = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "modification_count": order.get('modification_count', 0) + 1
     }
-    
-    # Allow specific fields to be updated
-    allowed_fields = ['flavour', 'size_pounds', 'base_size', 'cake_image_url', 'delivery_date', 'delivery_time',
-                     'name_on_cake', 'special_instructions', 'total_amount', 'secondary_images', 'customer_info', 'occasion']
-    
+
+    # Allow specific fields to be updated. Super Admin can edit everything.
+    allowed_fields = [
+        'flavour', 'size_pounds', 'base_size', 'cake_image_url', 'delivery_date', 'delivery_time',
+        'name_on_cake', 'special_instructions', 'total_amount', 'secondary_images', 'customer_info', 'occasion',
+        'receiver_info', 'delivery_address', 'delivery_city', 'zone_id', 'needs_delivery',
+        'outlet_id', 'order_taken_by', 'is_hold', 'lifecycle_status', 'status',
+        'delivery_charge', 'custom_delivery_charge', 'voice_instruction_url'
+    ]
+
     for field in allowed_fields:
         if field in update_data:
             update_fields[field] = update_data[field]
-    
-    # Recalculate pending_amount when total_amount changes
-    if 'total_amount' in update_data:
-        new_total = float(update_data['total_amount'])
+
+    # Recalculate pending_amount when total_amount or delivery_charge changes
+    if 'total_amount' in update_data or 'delivery_charge' in update_data:
+        base_total = float(update_data.get('total_amount', order.get('total_amount') or 0))
+        # delivery_charge if provided replaces existing; else keep existing.
+        # NOTE: `total_amount` is stored as cake+delivery already at order creation, so we don't add again.
         paid_amount = order.get('paid_amount', 0)
-        update_fields['pending_amount'] = normalize_pending(new_total - paid_amount)
-        logger.info(f"Order {order_id}: total changed to {new_total}, paid={paid_amount}, pending={update_fields['pending_amount']}")
-    
+        update_fields['pending_amount'] = normalize_pending(base_total - paid_amount)
+        logger.info(f"Order {order_id}: total changed to {base_total}, paid={paid_amount}, pending={update_fields['pending_amount']}")
+
     await db.orders.update_one({"id": order_id}, {"$set": update_fields})
-    
-    # Log the update
+
+    # Build a granular before/after diff so admins can see exactly what changed
+    changed_fields = [k for k in update_fields.keys() if k not in ('updated_at', 'modification_count')]
+    before_snapshot = {k: order.get(k) for k in changed_fields}
+    after_snapshot = {k: update_fields.get(k) for k in changed_fields}
+
     log = Log(
         order_id=order_id,
         action="order_updated",
         performed_by=current_user.id,
-        before_data={"fields": list(update_data.keys())},
-        after_data=update_data
+        before_data=before_snapshot,
+        after_data=after_snapshot
     )
     log_doc = log.model_dump()
     log_doc['timestamp'] = log_doc['timestamp'].isoformat()
     await db.logs.insert_one(log_doc)
 
-    # Activity log (audit trail)
+    # Activity log (audit trail) with full diff
     try:
-        changed_fields = list(update_data.keys())
-        before_snapshot = {k: order.get(k) for k in changed_fields if k in order}
         await create_activity_log(
             user=current_user,
             action_type="order_updated",
-            description=f"Updated order {order.get('order_number', order_id)} ({', '.join(changed_fields)})",
+            description=f"Updated order {order.get('order_number', order_id)} — fields: {', '.join(changed_fields) or 'no field'}",
             entity_type="order",
             entity_id=order_id,
             order_number=order.get('order_number'),
             outlet_id=order.get('outlet_id'),
             before_data=before_snapshot,
-            after_data=update_data
+            after_data=after_snapshot
         )
     except Exception as _e:
         logger.error(f"activity_log failed (order_update): {_e}")
 
-    return {"message": "Order updated successfully"}
+    # Fire-and-forget WhatsApp notification to the customer about the update
+    try:
+        background_tasks.add_task(send_whatsapp_notification, order_id, WhatsAppTemplateEvent.ORDER_UPDATED)
+    except Exception as _e:
+        logger.error(f"failed to queue ORDER_UPDATED WhatsApp for {order_id}: {_e}")
+
+    return {"message": "Order updated successfully", "changed_fields": changed_fields}
 
 
 @api_router.get("/orders/download-pdf")

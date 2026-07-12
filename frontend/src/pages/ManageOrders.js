@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -392,7 +393,10 @@ const ManageOrders = () => {
       
       await axios.patch(
         `${API_URL}/api/orders/${editFormData.id}`,
-        updateData,
+        {
+          ...updateData,
+          secondary_images: editFormData.secondary_images || [],
+        },
         { headers: { Authorization: `Bearer ${token}` } }
       );
       
@@ -2122,9 +2126,12 @@ const ManageOrders = () => {
                 </div>
                 <div>
                   <Label>Special Instructions</Label>
-                  <Input
+                  <Textarea
+                    rows={4}
                     value={editFormData.special_instructions || ''}
                     onChange={(e) => setEditFormData({...editFormData, special_instructions: e.target.value})}
+                    placeholder={"Enter each instruction on a new line, e.g.:\nExtra cream on top\nNo fondant"}
+                    data-testid="edit-special-instructions"
                   />
                 </div>
                 <div>
@@ -2152,6 +2159,67 @@ const ManageOrders = () => {
                       />
                       <p className="text-xs text-gray-500 mt-1">Upload new image to replace current one</p>
                     </div>
+                  </div>
+                </div>
+
+                {/* Reference / Secondary Images (up to 5) */}
+                <div>
+                  <Label>Reference Images (up to 5)</Label>
+                  <div className="flex flex-wrap items-center gap-3 mt-1">
+                    {(editFormData.secondary_images || []).map((img, idx) => (
+                      <div key={idx} className="relative" data-testid={`edit-secondary-img-${idx}`}>
+                        <img
+                          src={getImageUrl(img)}
+                          alt={`Ref ${idx + 1}`}
+                          className="w-16 h-16 object-cover rounded border"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setEditFormData(prev => ({
+                            ...prev,
+                            secondary_images: (prev.secondary_images || []).filter((_, i) => i !== idx)
+                          }))}
+                          className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs"
+                          data-testid={`remove-secondary-img-${idx}`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                    {(editFormData.secondary_images || []).length < 5 && (
+                      <div>
+                        <input
+                          type="file"
+                          accept="image/*,.heic,.heif,image/heic,image/heif"
+                          className="text-sm"
+                          data-testid="edit-secondary-image-input"
+                          onChange={async (e) => {
+                            const file = e.target.files[0];
+                            if (!file) return;
+                            try {
+                              const fd = new FormData();
+                              fd.append('file', file);
+                              const res = await axios.post(`${API_URL}/api/upload-image`, fd, {
+                                headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
+                              });
+                              const url = res.data.url || res.data.file_url;
+                              setEditFormData(prev => ({
+                                ...prev,
+                                secondary_images: [...(prev.secondary_images || []), url].slice(0, 5)
+                              }));
+                              setMessage({ type: 'success', text: 'Reference image added' });
+                            } catch (err) {
+                              setMessage({ type: 'error', text: err.response?.data?.detail || 'Upload failed' });
+                            } finally {
+                              e.target.value = '';
+                            }
+                          }}
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          {`${(editFormData.secondary_images || []).length}/5 uploaded`}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="flex justify-end space-x-2 pt-4">

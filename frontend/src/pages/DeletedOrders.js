@@ -118,32 +118,55 @@ const DeletedOrders = () => {
                       <TableRow>
                         <TableHead>Order #</TableHead>
                         <TableHead>Customer</TableHead>
-                        <TableHead>Flavour</TableHead>
+                        <TableHead>Flavour / Size</TableHead>
+                        <TableHead>Delivery</TableHead>
                         <TableHead>Amount</TableHead>
+                        <TableHead>Deleted From</TableHead>
                         <TableHead>Reason</TableHead>
                         <TableHead>Approved By</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {orders.map((order) => (
-                        <TableRow key={order.id} className="bg-red-50/30">
-                          <TableCell className="font-medium">{order.order_number}</TableCell>
+                      {orders.map((order) => {
+                        const stage = order.deleted_from_lifecycle_status || order.deleted_from_status || order.lifecycle_status || order.status || '—';
+                        const stageLabel = String(stage).replace(/_/g, ' ');
+                        return (
+                        <TableRow key={order.id} className="bg-red-50/30" data-testid={`deleted-row-${order.order_number}`}>
+                          <TableCell className="font-medium">
+                            <div>{order.order_number}</div>
+                            {order.occasion && (
+                              <div className="text-xs text-gray-500">{order.occasion}</div>
+                            )}
+                          </TableCell>
                           <TableCell>
                             <div>
                               <div>{order.customer_info?.name}</div>
                               <div className="text-xs text-gray-500">{order.customer_info?.phone}</div>
                             </div>
                           </TableCell>
-                          <TableCell>{order.flavour}</TableCell>
+                          <TableCell>
+                            <div>{order.flavour || '-'}</div>
+                            <div className="text-xs text-gray-500">{order.size_pounds ? `${order.size_pounds} lbs` : '-'}</div>
+                          </TableCell>
+                          <TableCell>
+                            <div className="text-sm">{order.delivery_date || '-'}</div>
+                            <div className="text-xs text-gray-500">{order.delivery_time || ''}</div>
+                          </TableCell>
                           <TableCell>₹{order.total_amount?.toFixed(2) || '0.00'}</TableCell>
+                          <TableCell>
+                            <Badge variant="secondary" className="capitalize" data-testid={`deleted-stage-${order.order_number}`}>
+                              {stageLabel}
+                            </Badge>
+                          </TableCell>
                           <TableCell className="max-w-xs">
-                            <div className="text-sm">{order.delete_reason || '-'}</div>
+                            <div className="text-sm whitespace-pre-wrap break-words">{order.delete_reason || '-'}</div>
                           </TableCell>
                           <TableCell>
                             <Badge variant="outline">{order.delete_approved_by_name || order.delete_approved_by || '-'}</Badge>
                           </TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 )}

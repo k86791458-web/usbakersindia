@@ -342,12 +342,21 @@ const NewOrder = () => {
         if (!formData.order_taken_by) errors.push('Order taken by');
         if (!formData.occasion) errors.push('Occasion');
         if (!formData.flavour) errors.push('Flavour');
+        if (!formData.size_pounds || parseFloat(formData.size_pounds) <= 0) errors.push('Cake size (pounds)');
         if (!formData.delivery_date) errors.push('Delivery date');
         if (!formData.delivery_time) errors.push('Delivery time');
         if (!formData.total_amount || formData.total_amount <= 0) errors.push('Cake amount');
         if (formData.needs_delivery && !formData.delivery_address) errors.push('Delivery address');
         if (formData.needs_delivery && !formData.zone_id) errors.push('Delivery zone');
 
+        if (errors.length > 0) {
+          return finishWithError(`Missing required fields: ${errors.join(', ')}`);
+        }
+      } else {
+        // Hold orders: enforce occasion + cake size as mandatory (Group A #3)
+        const errors = [];
+        if (!formData.occasion) errors.push('Occasion');
+        if (!formData.size_pounds || parseFloat(formData.size_pounds) <= 0) errors.push('Cake size (pounds)');
         if (errors.length > 0) {
           return finishWithError(`Missing required fields: ${errors.join(', ')}`);
         }
@@ -844,12 +853,13 @@ const NewOrder = () => {
                   </Select>
                 </div>
                 <div>
-                  <Label>Occasion</Label>
+                  <Label>Occasion *</Label>
                   <Select
+                    required
                     value={formData.occasion}
                     onValueChange={(value) => setFormData({ ...formData, occasion: value })}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger data-testid="occasion-select">
                       <SelectValue placeholder="Select occasion" />
                     </SelectTrigger>
                     <SelectContent>
