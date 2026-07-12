@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 9 — Group B Delivery Flow Rework FRONTEND testing complete. All 8 scenarios in the review request PASS end-to-end against the public preview URL. Verified: (1) Settings → Delivery Cities section (data-testid new-city-input / add-city-btn / delete-city-<name>) works — add + delete + row-appears/disappears confirmed. (2) NewOrder → toggle Delivery Required → City field rendered as DROPDOWN (data-testid delivery-city-select), populated by /api/cities (Chennai, Bengaluru and other seeded cities all visible in list). Fallback text input (delivery-city-input-fallback) correctly not shown when cities exist. (3) ManageOrders → seeded Order A (is_ready=true, no actual_cake_image_url, needs_delivery=true) shows EXACTLY ONE 'Upload Image' button with data-testid upload-image-btn-<orderId>. Zero 'Ready to Deliver' text-only buttons for that order. Clicking Upload Image opens camera/upload dialog. (4) ManageOrders → seeded Order B (needs_delivery=false, status=ready_to_deliver) shows orange 'Add Delivery' button (data-testid add-delivery-btn-<orderId>). Clicking opens the 4-step wizard dialog. All 4 steps and every data-testid present (add-delivery-zone-select, step1-next, complementary, charge-input, step2-next, receiver-name/phone, address, city-select, step3-next, person-select, submit-add-delivery). (5) NEGATIVE: submitting delivery_charge=75 → red error banner 'Delivery charge must be a multiple of ₹50 (or 0 for complementary)' rendered (400 from backend surfaced correctly to user). (6) POSITIVE: submitting delivery_charge=100 + delivery user assigned → success banner 'Delivery added to order', dialog closes, order shows 'Out for Delivery' + delivery ₹100 line in payment column. (7) DeliveryDashboard → primary-contact-<orderId> block shows Receiver X name + Receiver badge FIRST, phone 8888888888 as tel: link, customer info 'Customer: TEST UI9 Customer — 7777777777' as secondary line below. (8) OTP: mark-delivered-btn opens Verify OTP dialog; wrong OTP → 'Invalid OTP' error via data-testid delivery-otp-error; correct OTP (330552 fetched via /orders/manage) → dialog closes, order shows 'Delivered Successfully'.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ManageOrders — order row (Order B) actions cell", "issues": ["The Status Select trigger next to 'Add Delivery' is severely truncated to 'Ready to...' at 1920×1080 (Actions column too narrow). Not a bug — just UX. Consider widening Actions column or hiding the label in narrow viewports."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/seed_iteration_9.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ManageOrders.js is now 2789 lines — the Add Delivery wizard added ~200 lines inside an already-large file. Consider extracting the wizard (steps 1-4, state, submit handler) into a separate component (e.g., AddDeliveryWizard.jsx) to keep ManageOrders below ~2000 lines.",
+    "The 'Ready to Deliver' cyan status badge in the Status column visually looks like a button because of its filled-pill style. Not a functional bug but users may click it expecting an action. Consider giving it a distinctly non-interactive style (rounded-full, non-hoverable, muted).",
+    "DeliveryDashboard.js primary-contact block correctly hides the receiver Customer: line if customer_info.phone === receiver.phone. Good.",
+    "The Upload Image button condition `order.is_ready && !order.actual_cake_image_url` does NOT check needs_delivery — so a non-delivery order can also show Upload Image, which is the intended behavior per spec. Confirmed working.",
+    "add-delivery-charge-input uses type='number' step='50' which some browsers will auto-round to nearest 50 with spinner but allow arbitrary values via keyboard (as observed with 75). This is fine because backend validates, but frontend could add its own client-side gate (%50 check) to give instant feedback before submit."
+  ],
+  "updated_files": [
+    "/app/backend/tests/seed_iteration_9.py (new — seeds delivery user, zone, cities, and Orders A/B/C for UI testing)"
+  ],
+  "success_rate": {"backend": "not requested (previous iter 8 = 100%)", "frontend": "100% (8/8 scenarios PASS)"},
+  "test_credentials": "Super Admin admin@usbakers.com / admin123. Delivery user seeded: test_delivery_ui9@usbakers.com / delpass123 (role=delivery).",
+  "seed_data_creation": "Created via /app/backend/tests/seed_iteration_9.py: delivery user test_delivery_ui9@usbakers.com (id 4216544a-689e-4eda-99bc-41717b0f39c7), zone TESTZone_100_b8e4 (₹100), cities Chennai_ui9 + Bengaluru_ui9, Order A fbcf8d08-3520-4d9a-b0a8-0f686053f509 (delivery order, is_ready via /mark-ready, no image, status=ready) — used for Upload Image button test, Order B 01938872-1d9a-4207-92eb-6ec268be6671 (non-delivery, status=ready_to_deliver) — used for Add Delivery wizard test (now converted to Out for Delivery via wizard), Order C 12d855be-3592-458c-b28d-d2caff6ac47e (delivery order, picked_up, assigned to delivery user, delivery_otp=330552) — used for OTP dialog test (now marked Delivered).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Group B (Delivery Flow Rework) is fully green — backend (iter 8: 24/24) + frontend (iter 9: 8/8). Test artifacts: /app/backend/tests/seed_iteration_9.py can be re-run to seed a fresh batch (increments new order numbers each run). Note the server clock is currently around 2026-07-12; use delivery_date >= today+1 when creating orders. The pending optional hardening items from iter 8 (verify-otp role guard, receiver_info Pydantic model, cities include_inactive query) are still open but not blocking.",
+  "rca_of_the_issue": "N/A — no bugs found in Group B frontend."
+}

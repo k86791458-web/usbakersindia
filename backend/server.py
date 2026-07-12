@@ -4431,9 +4431,14 @@ async def get_delivery_summary(
 @api_router.post("/delivery/verify-otp")
 async def verify_delivery_otp(
     verification_data: Dict[str, str],
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.DELIVERY]))
 ):
-    """Verify OTP and mark order as delivered"""
+    """Verify OTP and mark order as delivered.
+
+    Only super_admin or the delivery role can invoke this. The order must be
+    in a state where delivery is expected (picked_up / out_for_delivery /
+    ready_to_deliver) — this prevents flipping arbitrary orders to delivered.
+    """
     order_id = verification_data.get('order_id')
     otp = verification_data.get('otp')
     
@@ -4444,7 +4449,19 @@ async def verify_delivery_otp(
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
+
+    # Guard: only allow OTP flip when order is genuinely out for delivery
+    current_status = order.get('status')
+    if current_status not in (
+        OrderStatus.PICKED_UP.value,
+        OrderStatus.REACHED.value,
+        OrderStatus.READY_TO_DELIVER.value,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Order cannot be marked delivered from status '{current_status}'",
+        )
+
     # Verify OTP
     if order.get('delivery_otp') != otp:
         raise HTTPException(status_code=400, detail="Invalid OTP")
