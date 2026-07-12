@@ -1,0 +1,58 @@
+{
+  "summary": "Iteration 7 — FRONTEND ONLY testing for Group A UI changes on US Bakers CRM. All three feature areas (NewOrder mandatory validation, ManageOrders edit-dialog textarea + reference images, DeletedOrders enriched columns) were exercised end-to-end via Playwright against the public REACT_APP_BACKEND_URL. Result: 8/8 test scenarios PASS. Two minor UI issues found (Size (Pounds) label missing '*' visual, and Deleted Orders 'Approved By' shows user UUID instead of name). Seeded presets (occasions, flavours, time slots, sales-person) and one active test order (#684944) via backend API to enable UI tests.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "NewOrder — Size (Pounds) field label",
+        "issue": "The Label element for the Size (Pounds) input renders text 'Size (Pounds)' WITHOUT the '*' asterisk visual marker, even though: (a) the review request explicitly asks for the * on the label, (b) the field is now enforced as mandatory in handleSubmit for both Punch and Hold orders (line 345, 359 in NewOrder.js), and (c) sibling required fields ('Occasion *', 'Flavour *', 'Name *') all show the * on their labels. Users will not know it's mandatory until they submit and see the validation error. Fix: change /app/frontend/src/pages/NewOrder.js line 894 from <Label>Size (Pounds)</Label> to <Label>Size (Pounds) *</Label>.",
+        "selector": "label:has-text('Size (Pounds)')",
+        "priority": "MEDIUM"
+      },
+      {
+        "component": "DeletedOrders — Approved By column",
+        "issue": "The 'Approved By' cell renders the user UUID (e.g. '9bbe1a3a-9601-4c22-b234-4578961d11e6') because backend response does not include delete_approved_by_name. Code fallback in DeletedOrders.js:165 already prefers delete_approved_by_name → falls back to delete_approved_by (UUID). Two ways to fix: (1) join user name in backend /api/orders/deleted response (preferred, populate delete_approved_by_name), OR (2) frontend does an additional /api/users/{id} lookup and displays the name. Currently a very confusing UX for super-admins reviewing deletions.",
+        "selector": "table tbody td:nth-last-child(1) .badge",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_coverage_results": {
+    "1_login_and_navigate": "PASS — admin@usbakers.com / admin123 → /dashboard; sidebar navigation to New Order, Manage Orders, Deleted Orders works.",
+    "2_new_order_labels": "MIXED — 'Occasion *' label has *, but 'Size (Pounds)' label does NOT have *. data-testid='occasion-select' and data-testid='size-input' both present as expected. See ui_bugs[0].",
+    "3_hold_order_validation": "PASS — Click Hold Order with empty form → banner: 'Missing required fields: Occasion, Cake size (pounds)'. Fill Occasion → banner: 'Missing required fields: Cake size (pounds)'. Fill Occasion + Size → next validation ('Gender is required') fires — Group A mandatory checks resolved.",
+    "4_punch_order_validation": "PASS — Punch with empty form → banner includes both 'Occasion' AND 'Cake size (pounds)'. After selecting occasion, banner includes 'Cake size (pounds)' but NOT 'Occasion'. Exact strings match spec.",
+    "5_edit_dialog_special_instructions_textarea": "PASS — data-testid='edit-special-instructions' element has tagName=TEXTAREA and rows=4. Typing Enter inside inserts newline (verified textarea value contains 2 \\n characters after Enter Enter). Dialog remains open (Enter does NOT submit the form).",
+    "6_edit_dialog_reference_images_upload_flow": "PASS — data-testid='edit-secondary-image-input' present. Uploaded /tmp/test_img.png five times via set_input_files → 5 thumbnails visible with data-testid=edit-secondary-img-{0..4} and remove-secondary-img-{0..4} buttons. Counter shows '1/5 uploaded' after first upload. At 5/5 the input disappears (count 0). After clicking remove-secondary-img-2 the count drops to 4 and the input re-appears.",
+    "7_edit_dialog_save_persistence": "PASS — Save Changes → dialog closes, alert 'Order updated successfully' shown. Backend GET /api/orders/manage confirms order 684944 has secondary_images=[4 URLs] and special_instructions='Line one\\nLine two\\nLine three' — newlines preserved end-to-end.",
+    "8_deleted_orders_page": "PASS — Table headers exactly match spec: ['Order #','Customer','Flavour / Size','Delivery','Amount','Deleted From','Reason','Approved By']. Both deleted rows show data-testid='deleted-stage-201854' and data-testid='deleted-stage-751268' badges with text 'active' (capitalized via className='capitalize'). Only cosmetic issue: Approved By column shows UUID — see ui_bugs[1].",
+    "totals": "8/8 UI scenarios PASSED"
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_7.json"
+  ],
+  "action_items": [
+    "P1 — Add the '*' visual marker to the Size (Pounds) label in /app/frontend/src/pages/NewOrder.js:894. Change <Label>Size (Pounds)</Label> to <Label>Size (Pounds) *</Label> for parity with Occasion, Flavour, Name.",
+    "P2 — Populate delete_approved_by_name in the backend response of GET /api/orders/deleted (join with users collection on delete_approved_by → look up name). This fixes the DeletedOrders 'Approved By' column showing raw UUID instead of a human-readable name.",
+    "OPTIONAL — Consider showing an inline red-border on the Size input when submit fails (same UX pattern used for Gender field in NewOrder.js:717,726).",
+    "OPTIONAL — Counter '{n}/5 uploaded' currently disappears at 5/5 because it's nested inside the file-input <div> that only renders when length<5. Consider moving the counter outside so users always see the full state (e.g. '5/5 uploaded — max reached')."
+  ],
+  "critical_code_review_comments": [
+    "NewOrder.js — Size (Pounds) label lacks '*' asterisk even though the field is now truly mandatory (Group A #3 backend/frontend both enforce). This creates a mismatch between UI signals and validation behavior. Users hit the validation error banner instead of being pre-warned by the label like other required fields.",
+    "ManageOrders.js — Reference Images counter text '{n}/5 uploaded' lives inside the same conditional block as the file <input>, so it disappears the moment users hit 5 uploads. Consider always rendering the count so users know the max was reached.",
+    "DeletedOrders.js:165 — Renders delete_approved_by (UUID) as a fallback badge. Since backend does not populate delete_approved_by_name, users see a UUID. Add a users lookup in the backend endpoint OR fetch /api/users on the frontend page (there's already an isSuperAdmin check).",
+    "ManageOrders.js — 2515 LOC file is well over the 700-line guideline. The Edit Order dialog alone spans ~250 lines (2000-2242). Split into components (EditOrderDialog, TransferDialog, DeleteDialog, PhotoUploadDialog).",
+    "ManageOrders.js — The upload endpoint URL is hardcoded via API_URL const (from REACT_APP_BACKEND_URL), which is correct. However, on secondary image upload success the code sets a success toast (line 2210) that will persist under the dialog and could distract users when they Save. Consider clearing it in submitEditOrder or scoping it to a dialog-local state.",
+    "General — File-upload flows swallow any FileNotFoundError / 500 by rendering err.response?.data?.detail || 'Upload failed'. If the endpoint is misconfigured, the user just sees 'Upload failed' with no diagnostic. Consider surfacing status codes in logs / dev toast."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "not requested (iteration 6 was 100%)", "frontend": "100% (8/8 scenarios). 2 non-blocking UI polish issues logged."},
+  "test_credentials": "Super Admin: admin@usbakers.com / admin123 (from /app/memory/test_credentials.md).",
+  "seed_data_creation": "Preview DB had zero occasions/flavours/time-slots/sales-persons on start. Seeded via authenticated POSTs: occasions [Birthday, Anniversary, Wedding], flavours [Chocolate, Vanilla, Strawberry], time-slots [10:00-12:00, 14:00-16:00, 18:00-20:00], sales-person 'TEST Salesperson' bound to the auto-seeded TEST Outlet (outlet_id from previous iteration). Also created one full punch order (order #684944, TEST Customer create) which was later used to exercise the Edit Order dialog (special_instructions with newlines + 4 secondary_images persisted).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Group A frontend scope is DONE. The 2 UI bugs are polish-level (missing * on Size label, UUID in Approved By badge) — the main agent can trivially fix both. When re-testing, use the seeded order #684944 which now has 4 secondary_images and a 3-line special_instructions to sanity-check any changes to Edit dialog. The 2 deleted orders in Deleted Orders page have deleted_from_lifecycle_status='active' so the 'Deleted From' badge will show 'active' (capitalize class flips it to 'Active').",
+  "rca_of_the_issue": "Size (Pounds) missing * asterisk: The Label component at NewOrder.js:894 was not updated when the mandatory validation was added at lines 345 and 359. The developer added validation logic but forgot the corresponding UI label change. Also, the sibling Label at line 856 ('Occasion *') was updated correctly, showing that the pattern is known — this line just got missed. Approved By UUID: The frontend already has the correct fallback chain (delete_approved_by_name → delete_approved_by → '-') and the DEV note in iteration 6 called out that the backend hasn't populated the name. The fix belongs in the backend serialiser for GET /api/orders/deleted."
+}
