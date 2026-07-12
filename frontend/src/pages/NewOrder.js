@@ -891,7 +891,7 @@ const NewOrder = () => {
                   </Select>
                 </div>
                 <div>
-                  <Label>Size (Pounds)</Label>
+                  <Label>Size (Pounds) *</Label>
                   <Input
                     required
                     type="number"

@@ -121,15 +121,56 @@ Fixes:
 - Frontend `Payments.js` Pending tab + counts + total now use `>= 1` threshold so dust orders disappear from the list.
 - New one-time cleanup script: `/app/backend/cleanup_pending_dust.py` — sets `pending_amount = 0` for all orders where `0 < pending < ₹1` (also normalizes small negative dust).
 
+## Iteration 7 (2026-02) — Group A: Order Lifecycle & Editing (P0)
+
+### Completed (backend + frontend, tested green)
+- **Occasion & Cake Size mandatory** — enforced in `NewOrder.js` for BOTH Punch and Hold order paths. Labels updated with `*` markers.
+- **Super Admin can edit orders after Ready** — PATCH `/api/orders/{id}` now bypasses `is_ready` guard when caller is `super_admin`. Non-super roles get 400 "Cannot edit order after it's marked as ready. Contact Super Admin.".
+- **Allowed-fields expanded (13 new)** — PATCH now accepts `receiver_info`, `delivery_address`, `delivery_city`, `zone_id`, `needs_delivery`, `outlet_id`, `order_taken_by`, `is_hold`, `lifecycle_status`, `status`, `delivery_charge`, `custom_delivery_charge`, `voice_instruction_url`. Response includes `changed_fields[]`. This also FIXES the "Hold order data not persisted" bug — hold orders released from `HoldOrders.js` no longer lose these fields silently.
+- **Activity Log full diff** — every PATCH writes `before_data`/`after_data` snapshots to both `logs` and `activity_logs` collections.
+- **Auto WhatsApp on order edit (AiSensy)** — new `WhatsAppTemplateEvent.ORDER_UPDATED` enum value. PATCH fires a `BackgroundTasks.add_task(send_whatsapp_notification, order_id, ORDER_UPDATED)`. Graceful: if AiSensy config missing, silently skips; PATCH still 200s.
+- **Multiple reference images (up to 5) on Edit Order** — new "Reference Images" section in `ManageOrders.js` edit dialog with per-image remove buttons. Persists via existing `secondary_images` list.
+- **Special Instructions supports newlines** — `Input` → `Textarea` (rows=4) in edit dialog. Enter key now inserts newline instead of submitting.
+- **Deleted Orders enriched view** — records `deleted_from_status` + `deleted_from_lifecycle_status` at delete time (both direct super-admin delete and approved-request paths). `DeletedOrders.js` shows new columns: Flavour/Size, Delivery, Deleted From (badge), plus improved Reason wrapping. Backend `GET /orders/deleted` now joins user names → `delete_approved_by_name` / `delete_requested_by_name` / `deleted_by_name`.
+
+### Tests
+- `/app/backend/tests/test_iteration_6_order_lifecycle.py` — 19/19 PASS (backend Group A).
+- Iteration 7 report — 8/8 PASS (frontend Group A).
+
+## Group A — Still TO DO (deferred)
+- Discount not reflecting in CRM totals (needs clarification: which screen shows wrong value? Current code DOES subtract discount from `total_amount`, so aggregates already exclude it. May need a separate "Discount Total" column in reports.)
+
+## Group B — Delivery Flow Rework (P0)
+- Ready + delivery=yes + paid → upload photo → assign delivery person single-button flow.
+- Combine two Upload+Ready-to-Deliver buttons into one "Upload Image".
+- Add-delivery-after-order flow in Manage Orders (Zone → Charges → Receiver → Assign).
+- Delivery person sees full order details.
+- Delivery amount = multiple of ₹50 or complementary.
+- City in delivery info = dropdown from Super Admin settings.
+- Customer OTP verification on delivery receipt.
+- Receiver-as-primary contact when receiver info provided.
+
+## Group C — Global Filters (P1)
+- Global Outlet filter everywhere; login default = home outlet.
+- Settings flavours appear in filters everywhere.
+- Custom Flavour = ask user for name; goes into PDF + KOT.
+- Manage Orders filter: pending payment > ₹1.
+- Manage Orders show booking date column.
+- Phone search returns ALL orders for that number.
+- Full activity log description (untruncated).
+
 ## Backlog (P1/P2)
 - **P2 (carry-over):** Sidebar brand-text overlap on the round logo at wide widths — add `min-w-0 truncate` to the title span.
-- **P2:** `server.py` is ~6,600 lines — split into routers (auth, orders, kitchen, delivery, payments, aisensy, activity, settings, twofa).
+- **P2:** `server.py` is ~6,650 lines — split into routers (auth, orders, kitchen, delivery, payments, aisensy, activity, settings, twofa).
+- **P2:** `ManageOrders.js` is ~2,540 lines — extract Edit Order Dialog, Transfer Dialog, Delete Dialog, Camera/Photo Dialog.
 - **P2:** `Settings.js` is ~1,170 lines after 2FA additions — extract `TwoFactorCard` + dialogs into `/components/settings/TwoFactor.jsx`.
 - **P2:** Capture IP + user-agent on the `login` activity log entry.
 - **P2:** Seed orders with partial dues so Pending Payments pagination can be e2e re-verified.
-- **P3:** Mask AiSensy api_key with dynamic length (cosmetic).
+- **P2:** `GET /api/activity-logs` should accept `entity_id` filter to avoid client-side scan on large collections.
+- **P2:** Add `GET /api/orders/{order_id}` — no direct fetch-by-id endpoint today.
+- **P3:** Reference Images counter `{n}/5 uploaded` disappears when count=5; render it outside conditional.
 
 ## Next Action Items
 - Run `python cleanup_pending_dust.py` on the VPS once to clean existing dust in prod.
-- Get AiSensy template/campaign names from the AiSensy dashboard and configure them in the new **AiSensy WhatsApp → Campaigns** tab so notifications actually fire.
-- Review the broader bug-fix backlog already documented in the repo (`SCALING_ROADMAP.md`, `IMPROVEMENTS_RECOMMENDED.md`, `BUG_FIXES_PLAN.md`).
+- Configure AiSensy `order_updated` template + API campaign in the AiSensy dashboard, then map it in the AiSensy tab so edit-order notifications actually fire.
+- Move on to Group B (Delivery Flow Rework) after user validates Group A on preview.

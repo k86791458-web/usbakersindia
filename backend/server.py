@@ -2606,7 +2606,7 @@ async def get_delete_requests(
 async def get_deleted_orders(
     current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
 ):
-    """Get all deleted orders"""
+    """Get all deleted orders (with joined user names for approved_by / requested_by / deleted_by)."""
     query = {"is_deleted": True}
     
     # Outlet admin can only see their outlet's deleted orders
@@ -2614,6 +2614,22 @@ async def get_deleted_orders(
         query["outlet_id"] = current_user.outlet_id
     
     orders = await db.orders.find(query, {"_id": 0}).sort("updated_at", -1).to_list(500)
+
+    # Enrich with user names for delete_approved_by / delete_requested_by / deleted_by
+    user_ids = set()
+    for o in orders:
+        for key in ('delete_approved_by', 'delete_requested_by', 'deleted_by'):
+            uid = o.get(key)
+            if uid:
+                user_ids.add(uid)
+    if user_ids:
+        users = await db.users.find({"id": {"$in": list(user_ids)}}, {"_id": 0, "id": 1, "name": 1}).to_list(len(user_ids))
+        name_lookup = {u['id']: u.get('name') for u in users}
+        for o in orders:
+            for key in ('delete_approved_by', 'delete_requested_by', 'deleted_by'):
+                uid = o.get(key)
+                if uid and uid in name_lookup:
+                    o[f"{key}_name"] = name_lookup[uid]
     return orders
 
 @api_router.patch("/orders/{order_id}")
