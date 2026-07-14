@@ -137,20 +137,34 @@ Fixes:
 - `/app/backend/tests/test_iteration_6_order_lifecycle.py` — 19/19 PASS (backend Group A).
 - Iteration 7 report — 8/8 PASS (frontend Group A).
 
+## Iteration 8/9 (2026-02) — Group B: Delivery Flow Rework (P0) — COMPLETE
+
+### Completed (backend 24/24 + frontend 8/8 tested green)
+- **Cities settings**: `db.cities` collection + `/api/cities` CRUD (list / create / patch / delete). Super Admin only for writes. Case-insensitive duplicate check. Delete blocked if any active order references the city name.
+- **₹50-multiple delivery-charge validation**: new `_validate_delivery_charge()` helper enforced in `POST /orders`, `PATCH /orders/{id}` (both `delivery_charge` and `custom_delivery_charge`), `POST /zones`, and `POST /orders/{id}/add-delivery`. `0` is always allowed (complementary).
+- **Single "Upload Image" button** (`ManageOrders.js`): replaced the old separate purple "Upload" and cyan "Ready to Deliver" pair. Uses existing camera-capture flow which uploads the photo AND auto-transitions status to `ready_to_deliver`.
+- **Add Delivery wizard** (`ManageOrders.js`): 4-step dialog (Zone → Charges → Receiver → Assign) opens for orders where `needs_delivery=false` and `status=ready_to_deliver`. New backend endpoint `POST /api/orders/{id}/add-delivery` supports zone / complementary / receiver / immediate-assign. Total & pending recalculated correctly.
+- **Delivery city dropdown**: `NewOrder.js` delivery form and Add-Delivery wizard both pull city list from `/api/cities`. Falls back to free-text input in NewOrder if no cities are configured.
+- **Customer OTP verification on delivery**: `DeliveryDashboard.js` "Delivered" CTA is now "Verify & Deliver" — opens a dedicated OTP dialog. Backend `POST /api/delivery/verify-otp` now guarded by `require_role([SUPER_ADMIN, DELIVERY])` AND requires order.status ∈ {picked_up, reached, ready_to_deliver} (fixes P0 security holes flagged by iter 8).
+- **Receiver as primary contact**: `DeliveryDashboard.js` primary-contact card shows `receiver_info` name + phone with an orange "Receiver" badge when present; customer info is shown as a smaller secondary line below.
+- **Delivery person full order details** — already returned by existing delivery endpoints; verified during iter 9 UI test.
+
+### Tests
+- `/app/backend/tests/test_iteration_8_delivery_flow.py` — 24/24 PASS.
+- `/app/backend/tests/seed_iteration_9.py` — seed helper for frontend runs.
+- Iteration 9 UI report — 8/8 scenarios PASS.
+
+### Deferred / Optional hardening flagged by iter 8 (not blocking)
+- `POST /orders/{id}/add-delivery`: validate `receiver_info` via `ReceiverInfo` Pydantic model.
+- Return `assign_skipped_reason` when `assign_delivery_person_id` is provided but order isn't `ready_to_deliver`.
+- `GET /api/cities?include_inactive=true` for reactivation UI.
+- Store `city_id` (not name) on order to survive city rename.
+- Client-side `%50` gate on the Add Delivery charge input for instant feedback.
+
 ## Group A — Still TO DO (deferred)
 - Discount not reflecting in CRM totals (needs clarification: which screen shows wrong value? Current code DOES subtract discount from `total_amount`, so aggregates already exclude it. May need a separate "Discount Total" column in reports.)
 
-## Group B — Delivery Flow Rework (P0)
-- Ready + delivery=yes + paid → upload photo → assign delivery person single-button flow.
-- Combine two Upload+Ready-to-Deliver buttons into one "Upload Image".
-- Add-delivery-after-order flow in Manage Orders (Zone → Charges → Receiver → Assign).
-- Delivery person sees full order details.
-- Delivery amount = multiple of ₹50 or complementary.
-- City in delivery info = dropdown from Super Admin settings.
-- Customer OTP verification on delivery receipt.
-- Receiver-as-primary contact when receiver info provided.
-
-## Group C — Global Filters (P1)
+## Group C — Global Filters (P1) — NEXT
 - Global Outlet filter everywhere; login default = home outlet.
 - Settings flavours appear in filters everywhere.
 - Custom Flavour = ask user for name; goes into PDF + KOT.
@@ -160,17 +174,17 @@ Fixes:
 - Full activity log description (untruncated).
 
 ## Backlog (P1/P2)
-- **P2 (carry-over):** Sidebar brand-text overlap on the round logo at wide widths — add `min-w-0 truncate` to the title span.
-- **P2:** `server.py` is ~6,650 lines — split into routers (auth, orders, kitchen, delivery, payments, aisensy, activity, settings, twofa).
-- **P2:** `ManageOrders.js` is ~2,540 lines — extract Edit Order Dialog, Transfer Dialog, Delete Dialog, Camera/Photo Dialog.
-- **P2:** `Settings.js` is ~1,170 lines after 2FA additions — extract `TwoFactorCard` + dialogs into `/components/settings/TwoFactor.jsx`.
+- **Refactor:** `ManageOrders.js` is now ~2,790 lines. Extract `AddDeliveryWizard.jsx`, `EditOrderDialog.jsx`, `AssignDeliveryDialog.jsx`.
+- **Refactor:** `server.py` is ~6,910 lines. Split into `routers/cities.py`, `routers/delivery.py`, `routers/zones.py`, `routers/orders.py`, `routers/auth.py`, `routers/twofa.py`.
+- **P2:** Sidebar brand-text overlap on the round logo — add `min-w-0 truncate`.
 - **P2:** Capture IP + user-agent on the `login` activity log entry.
 - **P2:** Seed orders with partial dues so Pending Payments pagination can be e2e re-verified.
-- **P2:** `GET /api/activity-logs` should accept `entity_id` filter to avoid client-side scan on large collections.
+- **P2:** `GET /api/activity-logs` should accept `entity_id` filter.
 - **P2:** Add `GET /api/orders/{order_id}` — no direct fetch-by-id endpoint today.
-- **P3:** Reference Images counter `{n}/5 uploaded` disappears when count=5; render it outside conditional.
+- **P3:** Reference Images counter `{n}/5 uploaded` disappears when count=5; render outside conditional.
+- **P3:** Status pill "Ready to Deliver" looks button-ish — style as clearly non-interactive.
 
 ## Next Action Items
 - Run `python cleanup_pending_dust.py` on the VPS once to clean existing dust in prod.
-- Configure AiSensy `order_updated` template + API campaign in the AiSensy dashboard, then map it in the AiSensy tab so edit-order notifications actually fire.
-- Move on to Group B (Delivery Flow Rework) after user validates Group A on preview.
+- Configure AiSensy `order_updated` template + campaign so edit-order and add-delivery notifications actually fire (currently a no-op).
+- Move on to **Group C — Global Filters** after user validates Group B on preview.
