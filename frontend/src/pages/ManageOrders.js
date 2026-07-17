@@ -203,8 +203,11 @@ const ManageOrders = () => {
     fetchOutlets();
     fetchDeliveryPersons();
     fetchFlavoursAndOccasions();
-    // No default date filter — show all active orders. User can click "Today"
-    // quick-filter below to narrow down.
+    // Default: show today's orders only (IST-safe local date).
+    // Use "Clear Dates" / "Tomorrow" / custom From-To to widen the range.
+    const t = localToday();
+    setDateFrom(t);
+    setDateTo(t);
   }, []);
   const fetchFlavoursAndOccasions = async () => {
     try {
