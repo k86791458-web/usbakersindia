@@ -172,6 +172,7 @@ const ManageOrders = () => {
   const [dateTo, setDateTo] = useState('');
   const [occasionFilter, setOccasionFilter] = useState('all');
   const [flavourFilter, setFlavourFilter] = useState('all');
+  const [outletFilter, setOutletFilter] = useState('all');
   const [flavoursList, setFlavoursList] = useState([]);
   const [occasionsList, setOccasionsList] = useState([]);
 
@@ -222,7 +223,7 @@ const ManageOrders = () => {
 
   useEffect(() => {
     applyFilters();
-  }, [searchTerm, statusFilter, activeTab, dateFrom, dateTo, occasionFilter, flavourFilter, orders]);
+  }, [searchTerm, statusFilter, activeTab, dateFrom, dateTo, occasionFilter, flavourFilter, outletFilter, orders]);
 
   const fetchOrders = async () => {
     try {
@@ -385,6 +386,11 @@ const ManageOrders = () => {
     // Flavour filter
     if (flavourFilter !== 'all') {
       filtered = filtered.filter(order => order.flavour === flavourFilter);
+    }
+
+    // Outlet filter
+    if (outletFilter !== 'all') {
+      filtered = filtered.filter(order => order.outlet_id === outletFilter);
     }
 
     // Search filter
@@ -1432,6 +1438,23 @@ const ManageOrders = () => {
                 </Select>
               </div>
 
+              <div>
+                <Label htmlFor="outlet-filter">Outlet</Label>
+                <Select value={outletFilter} onValueChange={setOutletFilter}>
+                  <SelectTrigger className="mt-1" data-testid="manage-orders-outlet-filter">
+                    <SelectValue placeholder="All Outlets" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Outlets</SelectItem>
+                    {outlets.map(outlet => (
+                      <SelectItem key={outlet.id} value={outlet.id} data-testid={`outlet-option-${outlet.id}`}>
+                        {outlet.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
               <div className="md:col-span-2 flex items-end">
                 <Button
                   variant="outline"
@@ -1443,8 +1466,10 @@ const ManageOrders = () => {
                     setDateTo('');
                     setOccasionFilter('all');
                     setFlavourFilter('all');
+                    setOutletFilter('all');
                   }}
                   className="w-full"
+                  data-testid="manage-orders-clear-all-filters"
                 >
                   Clear All Filters
                 </Button>
@@ -1453,30 +1478,39 @@ const ManageOrders = () => {
           </CardContent>
         </Card>
 
-        {/* Tabs */}
+        {/* Tabs — counts respect Outlet + Date filters (not status tab itself) */}
+        {(() => {
+          const scoped = orders.filter(o => {
+            if (outletFilter !== 'all' && o.outlet_id !== outletFilter) return false;
+            if (dateFrom && (o.delivery_date || '') < dateFrom) return false;
+            if (dateTo && (o.delivery_date || '') > dateTo) return false;
+            return true;
+          });
+          const cnt = (s) => scoped.filter(o => o.status === s).length;
+          return (
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="grid w-full grid-cols-8">
-            <TabsTrigger value="all">All ({orders.length})</TabsTrigger>
-            <TabsTrigger value="confirmed">
-              Confirmed ({orders.filter(o => o.status === 'confirmed').length})
+            <TabsTrigger value="all" data-testid="tab-all">All ({scoped.length})</TabsTrigger>
+            <TabsTrigger value="confirmed" data-testid="tab-confirmed">
+              Confirmed ({cnt('confirmed')})
             </TabsTrigger>
-            <TabsTrigger value="in_progress">
-              Preparing ({orders.filter(o => o.status === 'in_progress').length})
+            <TabsTrigger value="in_progress" data-testid="tab-in-progress">
+              Preparing ({cnt('in_progress')})
             </TabsTrigger>
-            <TabsTrigger value="ready">
-              Ready ({orders.filter(o => o.status === 'ready').length})
+            <TabsTrigger value="ready" data-testid="tab-ready">
+              Ready ({cnt('ready')})
             </TabsTrigger>
-            <TabsTrigger value="ready_to_deliver">
-              To Deliver ({orders.filter(o => o.status === 'ready_to_deliver').length})
+            <TabsTrigger value="ready_to_deliver" data-testid="tab-ready-to-deliver">
+              To Deliver ({cnt('ready_to_deliver')})
             </TabsTrigger>
-            <TabsTrigger value="picked_up">
-              Out ({orders.filter(o => o.status === 'picked_up').length})
+            <TabsTrigger value="picked_up" data-testid="tab-picked-up">
+              Out ({cnt('picked_up')})
             </TabsTrigger>
-            <TabsTrigger value="delivered">
-              Done ({orders.filter(o => o.status === 'delivered').length})
+            <TabsTrigger value="delivered" data-testid="tab-delivered">
+              Done ({cnt('delivered')})
             </TabsTrigger>
-            <TabsTrigger value="cancelled">
-              Cancelled ({orders.filter(o => o.status === 'cancelled').length})
+            <TabsTrigger value="cancelled" data-testid="tab-cancelled">
+              Cancelled ({cnt('cancelled')})
             </TabsTrigger>
           </TabsList>
 
@@ -1553,6 +1587,20 @@ const ManageOrders = () => {
                               <div>
                                 <div className="font-medium">{order.customer_info?.name}</div>
                                 <div className="text-sm text-gray-500">{order.customer_info?.phone}</div>
+                                {(() => {
+                                  const o = outlets.find(x => x.id === order.outlet_id);
+                                  return o ? (
+                                    <div className="mt-1">
+                                      <span
+                                        className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-pink-50 text-pink-700 border border-pink-200"
+                                        data-testid={`order-outlet-badge-${order.id}`}
+                                        title={o.name}
+                                      >
+                                        {o.name}
+                                      </span>
+                                    </div>
+                                  ) : null;
+                                })()}
                               </div>
                             </TableCell>
                             <TableCell>
@@ -1838,6 +1886,8 @@ const ManageOrders = () => {
             </Card>
           </TabsContent>
         </Tabs>
+          );
+        })()}
 
         {/* Image Preview Dialog */}
         <Dialog open={imagePreviewOpen} onOpenChange={setImagePreviewOpen}>

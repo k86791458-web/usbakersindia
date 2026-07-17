@@ -2526,7 +2526,7 @@ async def get_manage_orders(
     elif outlet_id:
         query["outlet_id"] = outlet_id
     
-    orders = await db.orders.find(query, {"_id": 0}).to_list(1000)
+    orders = await db.orders.find(query, {"_id": 0}).sort([("delivery_date", -1), ("created_at", -1)]).to_list(20000)
     
     # Enrich orders with PetPooja bill numbers from petpooja_bills and payments collections
     order_ids = [o['id'] for o in orders]
