@@ -1809,7 +1809,7 @@ async def get_credit_orders(
     orders = await db.orders.find(
         {"is_credit_order": True, "is_deleted": False},
         {"_id": 0}
-    ).sort("created_at", -1).to_list(500)
+    ).sort("created_at", -1).to_list(20000)
     return orders
 
 @api_router.post("/orders/{order_id}/mark-complementary")
@@ -1890,7 +1890,7 @@ async def get_credit_pending_orders(
     orders = await db.orders.find({
         "is_credit_order": True,
         "lifecycle_status": "pending_payment"
-    }, {"_id": 0}).to_list(1000)
+    }, {"_id": 0}).to_list(20000)
     return orders
 
 
@@ -2418,7 +2418,7 @@ async def get_hold_orders(
     elif outlet_id:
         query["outlet_id"] = outlet_id
     
-    orders = await db.orders.find(query, {"_id": 0}).to_list(1000)
+    orders = await db.orders.find(query, {"_id": 0}).sort([("delivery_date", -1), ("created_at", -1)]).to_list(20000)
     
     for order in orders:
         if isinstance(order.get('created_at'), str):
@@ -2442,7 +2442,7 @@ async def get_pending_orders(
     elif outlet_id:
         query["outlet_id"] = outlet_id
     
-    orders = await db.orders.find(query, {"_id": 0}).to_list(1000)
+    orders = await db.orders.find(query, {"_id": 0}).sort([("delivery_date", -1), ("created_at", -1)]).to_list(20000)
     
     # Convert date fields
     for order in orders:
@@ -2693,7 +2693,7 @@ async def get_delete_requests(
     orders = await db.orders.find(
         {"delete_status": "pending", "is_deleted": False},
         {"_id": 0}
-    ).sort("updated_at", -1).to_list(500)
+    ).sort("updated_at", -1).to_list(20000)
     orders = await enrich_orders_with_names(orders)
     return orders
 
@@ -2708,7 +2708,7 @@ async def get_deleted_orders(
     if current_user.role == UserRole.OUTLET_ADMIN and current_user.outlet_id:
         query["outlet_id"] = current_user.outlet_id
     
-    orders = await db.orders.find(query, {"_id": 0}).sort("updated_at", -1).to_list(500)
+    orders = await db.orders.find(query, {"_id": 0}).sort("updated_at", -1).to_list(20000)
 
     # Enrich with user names for delete_approved_by / delete_requested_by / deleted_by
     user_ids = set()
@@ -2858,7 +2858,7 @@ async def download_orders_pdf(
                 query["outlet_id"] = current_user.outlet_id
         
         # Fetch orders sorted by delivery time
-        orders = await db.orders.find(query, {"_id": 0}).sort("delivery_time", 1).to_list(1000)
+        orders = await db.orders.find(query, {"_id": 0}).sort("delivery_time", 1).to_list(20000)
         
         if not orders:
             raise HTTPException(status_code=404, detail="No orders found for the specified criteria")
@@ -3263,7 +3263,7 @@ async def get_available_delivery_orders(
         "needs_delivery": True,
         "assigned_delivery_partner": None
     }
-    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", 1).to_list(100)
+    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", 1).to_list(20000)
     return orders
 
 @api_router.post("/delivery/accept-order/{order_id}")
@@ -3343,7 +3343,7 @@ async def get_my_delivery_orders(
         "is_deleted": False,
         "status": {"$in": ["picked_up", "reached", "delivered"]}
     }
-    orders = await db.orders.find(query, {"_id": 0}).sort("updated_at", -1).to_list(100)
+    orders = await db.orders.find(query, {"_id": 0}).sort("updated_at", -1).to_list(20000)
     return orders
 
 class StatusUpdateRequest(BaseModel):
@@ -3569,7 +3569,7 @@ async def get_kitchen_orders(
     query['is_deleted'] = False
     query['is_hold'] = False
     
-    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_time", 1).to_list(1000)
+    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_time", 1).to_list(20000)
     orders = await enrich_orders_with_names(orders)
     orders = await enrich_orders_with_kitchen_deadline(orders)
     
@@ -3666,7 +3666,7 @@ async def get_kitchen_summary(
     if outlet_id:
         query['outlet_id'] = outlet_id
     
-    all_orders = await db.orders.find(query, {"_id": 0}).to_list(1000)
+    all_orders = await db.orders.find(query, {"_id": 0}).to_list(20000)
     
     confirmed_count = sum(1 for o in all_orders if o.get('status') == OrderStatus.CONFIRMED.value)
     ready_count = sum(1 for o in all_orders if o.get('status') == OrderStatus.READY.value)
@@ -3699,7 +3699,7 @@ async def get_production_sheet(
         query['outlet_id'] = outlet_id
     query['status'] = {"$in": [OrderStatus.CONFIRMED.value, OrderStatus.IN_PROGRESS.value, OrderStatus.READY.value]}
 
-    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_time", 1).to_list(2000)
+    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_time", 1).to_list(20000)
     orders = await enrich_orders_with_kitchen_deadline(orders)
 
     groups: Dict[str, Dict[str, Any]] = {}
@@ -3808,7 +3808,7 @@ async def get_factory_orders(
         query['outlet_id'] = outlet_id
     
     # Factory sees all statuses except deleted
-    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", -1).to_list(2000)
+    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", -1).to_list(20000)
     
     # Get outlet names
     outlets = await db.outlets.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
@@ -3842,7 +3842,7 @@ async def export_factory_orders_pdf(
         if outlet_id:
             query['outlet_id'] = outlet_id
         
-        orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", 1).to_list(2000)
+        orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", 1).to_list(20000)
         
         outlets_list = await db.outlets.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
         outlet_map = {o['id']: o['name'] for o in outlets_list}
@@ -4396,7 +4396,7 @@ async def get_delivery_orders(
     if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
         query['outlet_id'] = current_user.outlet_id
     
-    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", 1).to_list(1000)
+    orders = await db.orders.find(query, {"_id": 0}).sort("delivery_date", 1).to_list(20000)
     
     return orders
 
@@ -4410,7 +4410,7 @@ async def get_delivery_summary(
     if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
         query['outlet_id'] = current_user.outlet_id
     
-    all_orders = await db.orders.find(query, {"_id": 0}).to_list(1000)
+    all_orders = await db.orders.find(query, {"_id": 0}).to_list(20000)
     
     ready = sum(1 for o in all_orders if o.get('status') in [OrderStatus.READY.value, 'ready_to_deliver'])
     picked_up = sum(1 for o in all_orders if o.get('status') == OrderStatus.PICKED_UP.value)
@@ -5447,7 +5447,7 @@ async def get_petpooja_orders(
     """Get all orders that came from PetPooja POS"""
     query = {"petpooja_rest_id": {"$exists": True, "$ne": None}}
     
-    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(20000)
     
     # Convert datetime strings
     for order in orders:
