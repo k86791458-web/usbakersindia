@@ -188,15 +188,22 @@ const ManageOrders = () => {
     payment_method: 'cash'
   });
 
+  // Local YYYY-MM-DD (IST-safe, no UTC drift near midnight)
+  const localToday = () => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
   useEffect(() => {
     fetchOrders();
     fetchOutlets();
     fetchDeliveryPersons();
     fetchFlavoursAndOccasions();
-    // Set default date to today
-    const today = new Date().toISOString().split('T')[0];
-    setDateFrom(today);
-    setDateTo(today);
+    // No default date filter — show all active orders. User can click "Today"
+    // quick-filter below to narrow down.
   }, []);
   const fetchFlavoursAndOccasions = async () => {
     try {
@@ -1317,6 +1324,7 @@ const ManageOrders = () => {
                   value={dateFrom}
                   onChange={(e) => setDateFrom(e.target.value)}
                   className="mt-1"
+                  data-testid="manage-orders-date-from"
                 />
               </div>
 
@@ -1328,7 +1336,51 @@ const ManageOrders = () => {
                   value={dateTo}
                   onChange={(e) => setDateTo(e.target.value)}
                   className="mt-1"
+                  data-testid="manage-orders-date-to"
                 />
+              </div>
+
+              <div className="md:col-span-2 flex items-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const t = localToday();
+                    setDateFrom(t);
+                    setDateTo(t);
+                  }}
+                  data-testid="manage-orders-quick-today"
+                >
+                  Today
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const d = new Date();
+                    d.setDate(d.getDate() + 1);
+                    const y = d.getFullYear();
+                    const m = String(d.getMonth() + 1).padStart(2, '0');
+                    const day = String(d.getDate()).padStart(2, '0');
+                    const t = `${y}-${m}-${day}`;
+                    setDateFrom(t);
+                    setDateTo(t);
+                  }}
+                  data-testid="manage-orders-quick-tomorrow"
+                >
+                  Tomorrow
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { setDateFrom(''); setDateTo(''); }}
+                  data-testid="manage-orders-clear-dates"
+                >
+                  Clear Dates
+                </Button>
               </div>
 
               <div>
