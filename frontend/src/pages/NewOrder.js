@@ -910,8 +910,18 @@ const NewOrder = () => {
                   <Label>Flavour *</Label>
                   <Select
                     required
-                    value={formData.flavour}
-                    onValueChange={(value) => setFormData({ ...formData, flavour: value })}
+                    value={
+                      formData.flavour && !flavours.some(f => f.name === formData.flavour)
+                        ? '__custom__'
+                        : formData.flavour
+                    }
+                    onValueChange={(value) => {
+                      if (value === '__custom__') {
+                        setFormData({ ...formData, flavour: '' });
+                      } else {
+                        setFormData({ ...formData, flavour: value });
+                      }
+                    }}
                   >
                     <SelectTrigger data-testid="flavour-select">
                       <SelectValue placeholder="Select flavour" />
@@ -922,8 +932,21 @@ const NewOrder = () => {
                           {flavour.name}
                         </SelectItem>
                       ))}
+                      <SelectItem value="__custom__" data-testid="flavour-custom">
+                        + Custom Flavour (enter below)
+                      </SelectItem>
                     </SelectContent>
                   </Select>
+                  {(formData.flavour === '' ||
+                    (formData.flavour && !flavours.some(f => f.name === formData.flavour))) && (
+                    <Input
+                      className="mt-2"
+                      placeholder="Enter custom flavour name"
+                      value={formData.flavour}
+                      onChange={(e) => setFormData({ ...formData, flavour: e.target.value })}
+                      data-testid="flavour-custom-input"
+                    />
+                  )}
                 </div>
                 <div>
                   <Label>Size (Pounds) *</Label>
@@ -1068,19 +1091,36 @@ const NewOrder = () => {
                   />
                 </div>
                 <div>
-                  <Label>Delivery Time *</Label>
-                  <Input
-                    type="time"
-                    required
+                  <Label>Delivery Time * <span className="text-xs text-gray-500 font-normal">(30-minute slots only)</span></Label>
+                  <Select
                     value={formData.delivery_time}
-                    onChange={(e) => {
-                      const selectedTime = e.target.value;
+                    onValueChange={(value) => {
                       setError('');
-                      setFormData({ ...formData, delivery_time: selectedTime });
+                      setFormData({ ...formData, delivery_time: value });
                     }}
-                    data-testid="delivery-time-input"
-                    className="w-full"
-                  />
+                  >
+                    <SelectTrigger data-testid="delivery-time-input">
+                      <SelectValue placeholder="Select delivery time" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-72">
+                      {Array.from({ length: 48 }, (_, i) => {
+                        const h = Math.floor(i / 2);
+                        const m = (i % 2) * 30;
+                        const hh = String(h).padStart(2, '0');
+                        const mm = String(m).padStart(2, '0');
+                        const val = `${hh}:${mm}`;
+                        const ampm = h >= 12 ? 'PM' : 'AM';
+                        let h12 = h % 12;
+                        if (h12 === 0) h12 = 12;
+                        const label = `${h12}:${mm} ${ampm}`;
+                        return (
+                          <SelectItem key={val} value={val} data-testid={`delivery-slot-${val}`}>
+                            {label}
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             </CardContent>

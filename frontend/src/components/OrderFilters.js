@@ -19,6 +19,8 @@ import debounce from 'lodash/debounce';
 export const OrderFilters = ({ 
   onFilterChange, 
   outlets = [], 
+  flavours = [],
+  occasions = [],
   showOutletFilter = true,
   showStatusFilter = true,
   showPaymentFilter = true,
@@ -36,6 +38,7 @@ export const OrderFilters = ({
     outlet: defaultFilters.outlet || '',
     paymentStatus: defaultFilters.paymentStatus || '',
     flavour: defaultFilters.flavour || '',
+    occasion: defaultFilters.occasion || '',
     minAmount: defaultFilters.minAmount || '',
     maxAmount: defaultFilters.maxAmount || '',
     ...defaultFilters
@@ -255,14 +258,42 @@ export const OrderFilters = ({
                 </div>
               )}
 
-              {/* Flavour Filter */}
+              {/* Flavour Filter (from Settings) */}
               <div className="space-y-2">
                 <Label className="font-medium">Cake Flavour</Label>
-                <Input
-                  placeholder="e.g., Chocolate, Vanilla..."
-                  value={filters.flavour}
-                  onChange={(e) => handleFilterChange('flavour', e.target.value)}
-                />
+                <Select
+                  value={filters.flavour || 'all'}
+                  onValueChange={(v) => handleFilterChange('flavour', v === 'all' ? '' : v)}
+                >
+                  <SelectTrigger data-testid="order-filter-flavour">
+                    <SelectValue placeholder="All Flavours" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    <SelectItem value="all">All Flavours</SelectItem>
+                    {flavours.map((f) => (
+                      <SelectItem key={f.id || f.name} value={f.name}>{f.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Occasion Filter (from Settings) */}
+              <div className="space-y-2">
+                <Label className="font-medium">Occasion</Label>
+                <Select
+                  value={filters.occasion || 'all'}
+                  onValueChange={(v) => handleFilterChange('occasion', v === 'all' ? '' : v)}
+                >
+                  <SelectTrigger data-testid="order-filter-occasion">
+                    <SelectValue placeholder="All Occasions" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    <SelectItem value="all">All Occasions</SelectItem>
+                    {occasions.map((o) => (
+                      <SelectItem key={o.id || o.name} value={o.name}>{o.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               {/* Amount Range */}

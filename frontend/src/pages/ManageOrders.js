@@ -209,6 +209,34 @@ const ManageOrders = () => {
     setDateFrom(t);
     setDateTo(t);
   }, []);
+
+  // Convert HH:mm 24h → "h:mm AM/PM"
+  const to12Hour = (hhmm) => {
+    if (!hhmm || typeof hhmm !== 'string' || !hhmm.includes(':')) return hhmm || '';
+    const [hStr, mStr] = hhmm.split(':');
+    const h = Number(hStr);
+    const m = Number(mStr || 0);
+    if (Number.isNaN(h) || Number.isNaN(m)) return hhmm;
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    let h12 = h % 12;
+    if (h12 === 0) h12 = 12;
+    return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+  };
+
+  // Subtract N minutes from HH:mm and return HH:mm (24h). Clamps at 00:00.
+  const subtractMinutesFromTime = (hhmm, minutes) => {
+    if (!hhmm || typeof hhmm !== 'string' || !hhmm.includes(':')) return hhmm || '';
+    const [hStr, mStr] = hhmm.split(':');
+    const h = Number(hStr);
+    const m = Number(mStr || 0);
+    if (Number.isNaN(h) || Number.isNaN(m)) return hhmm;
+    let total = h * 60 + m - (Number(minutes) || 0);
+    if (total < 0) total = 0;
+    const nh = Math.floor(total / 60) % 24;
+    const nm = total % 60;
+    return `${String(nh).padStart(2, '0')}:${String(nm).padStart(2, '0')}`;
+  };
+
   const fetchFlavoursAndOccasions = async () => {
     try {
       const [flavRes, occRes] = await Promise.all([
@@ -1055,6 +1083,13 @@ const ManageOrders = () => {
     const outlet = outlets.find(o => o.id === order.outlet_id);
     const outletName = outlet ? outlet.name : 'N/A';
     const takenByName = order.order_taken_by_name || 'Unknown';
+    const bufferMin = Number(outlet?.ready_time_buffer_minutes ?? 60);
+    const kotTime = subtractMinutesFromTime(order.delivery_time, bufferMin);
+    const kotTime12 = to12Hour(kotTime);
+    const deliveryTime12 = to12Hour(order.delivery_time);
+    const cakeAmount = Math.max(0, (order.total_amount || 0) - (order.delivery_charge || 0));
+    const isComplementaryDelivery = order.is_complementary || (order.delivery_charge === 0 && order.needs_delivery && order.is_complementary);
+    const balance = (order.pending_amount || 0);
 
     const printWindow = window.open('', '_blank');
 
@@ -1140,8 +1175,13 @@ const ManageOrders = () => {
           </div>
           <div class="row">
             <span>Time:</span>
-            <span>${order.delivery_time || 'N/A'}</span>
+            <span>${deliveryTime12 || 'N/A'}</span>
           </div>
+          ${kotTime && kotTime !== order.delivery_time ? `
+          <div class="row" style="font-size:14px; border:1.5px solid #000; padding:3px; margin:3px 0;">
+            <span>READY BY:</span>
+            <span>${kotTime12}</span>
+          </div>` : ''}
           <div class="row">
             <span>Delivery Status:</span>
             <span>${order.needs_delivery ? 'YES' : 'NO (Pickup)'}</span>
@@ -1193,22 +1233,30 @@ const ManageOrders = () => {
           <hr class="divider" />
           <div style="font-size:12px;">PAYMENT</div>
           <div class="row">
-            <span>Total:</span>
-            <span>Rs.${order.total_amount?.toFixed(2)}</span>
+            <span>Cake Amount:</span>
+            <span>Rs.${cakeAmount.toFixed(2)}</span>
           </div>
           <div class="row">
-            <span>Paid:</span>
-            <span>Rs.${order.paid_amount ? order.paid_amount.toFixed(2) : '0.00'}</span>
-          </div>
-          <div class="row">
-            <span>Pending:</span>
-            <span>Rs.${order.pending_amount ? order.pending_amount.toFixed(2) : '0.00'}</span>
+            <span>Delivery Amount:</span>
+            <span>${isComplementaryDelivery ? 'COMPLEMENTARY' : 'Rs.' + (order.delivery_charge || 0).toFixed(2)}</span>
           </div>
           ${order.discount_amount && order.discount_amount > 0 ? `
           <div class="row">
             <span>Discount:</span>
-            <span>Rs.${order.discount_amount.toFixed(2)}</span>
+            <span>- Rs.${order.discount_amount.toFixed(2)}</span>
           </div>` : ''}
+          <div class="row" style="border-top:1px dashed #000; padding-top:2px;">
+            <span>Total Amount:</span>
+            <span>Rs.${(order.total_amount || 0).toFixed(2)}</span>
+          </div>
+          <div class="row">
+            <span>Paid Amount:</span>
+            <span>Rs.${(order.paid_amount || 0).toFixed(2)}</span>
+          </div>
+          <div class="row">
+            <span>Balance Amount:</span>
+            <span>${isComplementaryDelivery && balance <= 0 ? 'COMPLEMENTARY' : 'Rs.' + balance.toFixed(2)}</span>
+          </div>
 
           ${order.petpooja_bill_numbers && order.petpooja_bill_numbers.length > 0 ? `
           <hr class="divider" />
@@ -1261,6 +1309,13 @@ const ManageOrders = () => {
       const outlet = outlets.find(o => o.id === order.outlet_id);
       const outletName = outlet ? outlet.name : 'N/A';
       const takenByName = order.order_taken_by_name || 'Unknown';
+      const bufferMin = Number(outlet?.ready_time_buffer_minutes ?? 60);
+      const kotTime = subtractMinutesFromTime(order.delivery_time, bufferMin);
+      const kotTime12 = to12Hour(kotTime);
+      const deliveryTime12 = to12Hour(order.delivery_time);
+      const cakeAmount = Math.max(0, (order.total_amount || 0) - (order.delivery_charge || 0));
+      const isCompDelivery = order.is_complementary || (order.delivery_charge === 0 && order.needs_delivery && order.is_complementary);
+      const balance = (order.pending_amount || 0);
       const instructions = order.special_instructions
         ? order.special_instructions.split('\n').filter(l => l.trim()).map(l => `* ${l.trim()}`).join('\n')
         : '';
@@ -1274,7 +1329,8 @@ const ManageOrders = () => {
         <div class="row"><span>Taken By:</span><span>${takenByName}</span></div>
         <hr class="divider" />
         <div class="row"><span>Delivery:</span><span>${order.delivery_date}</span></div>
-        <div class="row"><span>Time:</span><span>${order.delivery_time || 'N/A'}</span></div>
+        <div class="row"><span>Time:</span><span>${deliveryTime12 || 'N/A'}</span></div>
+        ${kotTime && kotTime !== order.delivery_time ? `<div class="row" style="font-size:14px; border:1.5px solid #000; padding:3px; margin:3px 0;"><span>READY BY:</span><span>${kotTime12}</span></div>` : ''}
         <div class="row"><span>Delivery Status:</span><span>${order.needs_delivery ? 'YES' : 'NO (Pickup)'}</span></div>
         <div class="row"><span>Status:</span><span>${(order.status || '').replace(/_/g, ' ').toUpperCase()}</span></div>
         <hr class="divider" />
@@ -1292,10 +1348,12 @@ const ManageOrders = () => {
         ${instructions ? `<hr class="divider" /><div class="instructions">INSTRUCTIONS:\n${instructions}</div>` : ''}
         <hr class="divider" />
         <div style="font-size:12px;">PAYMENT</div>
-        <div class="row"><span>Total:</span><span>Rs.${order.total_amount?.toFixed(2)}</span></div>
-        <div class="row"><span>Paid:</span><span>Rs.${order.paid_amount?.toFixed(2) || '0.00'}</span></div>
-        <div class="row"><span>Pending:</span><span>Rs.${order.pending_amount?.toFixed(2) || '0.00'}</span></div>
-        ${order.discount_amount && order.discount_amount > 0 ? `<div class="row"><span>Discount:</span><span>Rs.${order.discount_amount.toFixed(2)}</span></div>` : ''}
+        <div class="row"><span>Cake Amount:</span><span>Rs.${cakeAmount.toFixed(2)}</span></div>
+        <div class="row"><span>Delivery Amount:</span><span>${isCompDelivery ? 'COMPLEMENTARY' : 'Rs.' + (order.delivery_charge || 0).toFixed(2)}</span></div>
+        ${order.discount_amount && order.discount_amount > 0 ? `<div class="row"><span>Discount:</span><span>- Rs.${order.discount_amount.toFixed(2)}</span></div>` : ''}
+        <div class="row" style="border-top:1px dashed #000; padding-top:2px;"><span>Total Amount:</span><span>Rs.${(order.total_amount || 0).toFixed(2)}</span></div>
+        <div class="row"><span>Paid Amount:</span><span>Rs.${(order.paid_amount || 0).toFixed(2)}</span></div>
+        <div class="row"><span>Balance Amount:</span><span>${isCompDelivery && balance <= 0 ? 'COMPLEMENTARY' : 'Rs.' + balance.toFixed(2)}</span></div>
         ${order.petpooja_bill_numbers && order.petpooja_bill_numbers.length > 0 ? `
         <hr class="divider" />
         <div style="font-size:12px;">PETPOOJA BILLING</div>
@@ -1485,15 +1543,14 @@ const ManageOrders = () => {
               <div>
                 <Label htmlFor="occasion-filter">Occasion</Label>
                 <Select value={occasionFilter} onValueChange={setOccasionFilter}>
-                  <SelectTrigger className="mt-1">
+                  <SelectTrigger className="mt-1" data-testid="manage-orders-occasion-filter">
                     <SelectValue placeholder="All Occasions" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="max-h-72">
                     <SelectItem value="all">All Occasions</SelectItem>
-                    <SelectItem value="birthday">Birthday</SelectItem>
-                    <SelectItem value="anniversary">Anniversary</SelectItem>
-                    <SelectItem value="wedding">Wedding</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
+                    {occasionsList.map((occ) => (
+                      <SelectItem key={occ.id || occ.name} value={occ.name}>{occ.name}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -1501,17 +1558,14 @@ const ManageOrders = () => {
               <div>
                 <Label htmlFor="flavour-filter">Flavour</Label>
                 <Select value={flavourFilter} onValueChange={setFlavourFilter}>
-                  <SelectTrigger className="mt-1">
+                  <SelectTrigger className="mt-1" data-testid="manage-orders-flavour-filter">
                     <SelectValue placeholder="All Flavours" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="max-h-72">
                     <SelectItem value="all">All Flavours</SelectItem>
-                    <SelectItem value="chocolate">Chocolate</SelectItem>
-                    <SelectItem value="vanilla">Vanilla</SelectItem>
-                    <SelectItem value="strawberry">Strawberry</SelectItem>
-                    <SelectItem value="butterscotch">Butterscotch</SelectItem>
-                    <SelectItem value="red_velvet">Red Velvet</SelectItem>
-                    <SelectItem value="black_forest">Black Forest</SelectItem>
+                    {flavoursList.map((flav) => (
+                      <SelectItem key={flav.id || flav.name} value={flav.name}>{flav.name}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -1773,6 +1827,11 @@ const ManageOrders = () => {
                                 {order.delivery_charge > 0 && (
                                   <div className="text-xs text-gray-400">
                                     (incl. delivery ₹{order.delivery_charge.toFixed(2)})
+                                  </div>
+                                )}
+                                {order.discount_amount > 0 && (
+                                  <div className="text-xs text-emerald-700 font-medium" data-testid={`discount-badge-${order.id}`}>
+                                    Discount: −₹{Number(order.discount_amount).toFixed(2)}
                                   </div>
                                 )}
                                 <div className="text-gray-500">
@@ -2304,12 +2363,31 @@ const ManageOrders = () => {
                     />
                   </div>
                   <div>
-                    <Label>Delivery Time *</Label>
-                    <Input
-                      type="time"
-                      value={editFormData.delivery_time}
-                      onChange={(e) => setEditFormData({...editFormData, delivery_time: e.target.value})}
-                    />
+                    <Label>Delivery Time * <span className="text-xs text-gray-500 font-normal">(30-min slots)</span></Label>
+                    <Select
+                      value={editFormData.delivery_time || ''}
+                      onValueChange={(value) => setEditFormData({...editFormData, delivery_time: value})}
+                    >
+                      <SelectTrigger data-testid="edit-delivery-time">
+                        <SelectValue placeholder="Select delivery time" />
+                      </SelectTrigger>
+                      <SelectContent className="max-h-72">
+                        {Array.from({ length: 48 }, (_, i) => {
+                          const h = Math.floor(i / 2);
+                          const m = (i % 2) * 30;
+                          const hh = String(h).padStart(2, '0');
+                          const mm = String(m).padStart(2, '0');
+                          const val = `${hh}:${mm}`;
+                          const ampm = h >= 12 ? 'PM' : 'AM';
+                          let h12 = h % 12;
+                          if (h12 === 0) h12 = 12;
+                          const label = `${h12}:${mm} ${ampm}`;
+                          return (
+                            <SelectItem key={val} value={val}>{label}</SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -2335,21 +2413,41 @@ const ManageOrders = () => {
                   <div>
                     <Label>Flavour *</Label>
                     <Select
-                      value={editFormData.flavour || ''}
-                      onValueChange={(value) => setEditFormData({...editFormData, flavour: value})}
+                      value={
+                        editFormData.flavour && !flavoursList.some(f => f.name === editFormData.flavour)
+                          ? '__custom__'
+                          : (editFormData.flavour || '')
+                      }
+                      onValueChange={(value) => {
+                        if (value === '__custom__') {
+                          setEditFormData({ ...editFormData, flavour: '' });
+                        } else {
+                          setEditFormData({ ...editFormData, flavour: value });
+                        }
+                      }}
                     >
-                      <SelectTrigger>
+                      <SelectTrigger data-testid="edit-flavour-select">
                         <SelectValue placeholder="Select flavour" />
                       </SelectTrigger>
                       <SelectContent>
                         {flavoursList.map((flav) => (
                           <SelectItem key={flav.id} value={flav.name}>{flav.name}</SelectItem>
                         ))}
-                        {editFormData.flavour && !flavoursList.find(f => f.name === editFormData.flavour) && (
-                          <SelectItem value={editFormData.flavour}>{editFormData.flavour}</SelectItem>
-                        )}
+                        <SelectItem value="__custom__" data-testid="edit-flavour-custom">
+                          + Custom Flavour (enter below)
+                        </SelectItem>
                       </SelectContent>
                     </Select>
+                    {(editFormData.flavour === '' ||
+                      (editFormData.flavour && !flavoursList.some(f => f.name === editFormData.flavour))) && (
+                      <Input
+                        className="mt-2"
+                        placeholder="Enter custom flavour name"
+                        value={editFormData.flavour || ''}
+                        onChange={(e) => setEditFormData({ ...editFormData, flavour: e.target.value })}
+                        data-testid="edit-flavour-custom-input"
+                      />
+                    )}
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
