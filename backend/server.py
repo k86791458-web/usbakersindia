@@ -6467,6 +6467,36 @@ async def create_super_admin():
         logger.info("✅ Super Admin created - Email: admin@usbakers.com, Password: admin123")
 
 @app.on_event("startup")
+async def seed_default_flavours_and_occasions():
+    """Seed default cake flavours and occasions so filters work out of the box."""
+    try:
+        # Clean up any wrongly-seeded rows from the older collection name
+        await db.flavours.delete_many({})
+        if await db.cake_flavours.count_documents({}) == 0:
+            defaults = ["Chocolate", "Vanilla", "Strawberry", "Butterscotch",
+                        "Red Velvet", "Black Forest", "Pineapple", "Fruit & Nut Cake",
+                        "Blueberry", "Kiwi"]
+            now = datetime.now(timezone.utc).isoformat()
+            await db.cake_flavours.insert_many([
+                {"id": str(uuid.uuid4()), "name": name, "is_active": True, "created_at": now}
+                for name in defaults
+            ])
+            logger.info(f"✅ Seeded {len(defaults)} default flavours")
+        if await db.occasions.count_documents({}) == 0:
+            defaults = ["Birthday", "Anniversary", "Wedding", "Corporate Order",
+                        "Baby Shower", "Graduation", "Farewell", "Retirement",
+                        "House Warming", "Others"]
+            now = datetime.now(timezone.utc).isoformat()
+            await db.occasions.insert_many([
+                {"id": str(uuid.uuid4()), "name": name, "is_active": True, "created_at": now}
+                for name in defaults
+            ])
+            logger.info(f"✅ Seeded {len(defaults)} default occasions")
+    except Exception as e:
+        logger.error(f"Failed to seed default flavours/occasions: {e}")
+
+
+@app.on_event("startup")
 async def seed_change_log():
     """Seed initial changelog entries for features added."""
     existing = await db.change_log.count_documents({})

@@ -45,6 +45,18 @@ All 9 items PASS testing_agent (report /app/test_reports/iteration_10.json).
 - Unable to edit or delete user (Users page)
 - Cake Image Report — default current date filter missing
 
+### ✅ Completed — Batch B (order form + KOT/PDF) [2026-08-02]
+- **b1** Delivery Time is a Select with 48 half-hour slots (`00:00 / 00:30 / … / 23:30`) shown as 12-hour labels. Applied to both New Order and Edit Order.
+- **b2** Custom Flavour option in Flavour Select; free-text name propagates to order, KOT, PDF, list.
+- **b3** Flavours ### P1 — Batch B (order form + KOT/PDF) Occasions dropdowns in Manage Orders + shared OrderFilters wired to `/api/flavours` and `/api/occasions`. Startup seed adds 10 flavours + 10 occasions if collections empty.
+- **b4** KOT payment block re-laid out: Cake Amount / Delivery Amount / (Discount) / Total / Paid / Balance, with "COMPLEMENTARY" label when applicable.
+- **b5** Kitchen READY BY row on KOT (single + bulk) = delivery_time − outlet.ready_time_buffer_minutes (defaults to 0 when unset).
+- **b6** Occasion + Cake size (pounds) mandatory in NewOrder for punch and hold — verified.
+- **b7** Discount badge added on Manage Orders row + Discount row in KOT PAYMENT block when >0.
+- **b8** WhatsApp ORDER_UPDATED template fires on PATCH — verified.
+
+Pytest: `/app/backend/tests/test_batch_b.py` (6/6 pass). Testing report: `/app/test_reports/iteration_11.json`.
+
 ### P1 — Batch B (order form + KOT/PDF)
 - 30-min slot enforcement on delivery time
 - Custom flavour entry (freeform) → propagates to KOT/PDF/list

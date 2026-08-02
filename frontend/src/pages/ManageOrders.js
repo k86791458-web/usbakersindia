@@ -1083,7 +1083,7 @@ const ManageOrders = () => {
     const outlet = outlets.find(o => o.id === order.outlet_id);
     const outletName = outlet ? outlet.name : 'N/A';
     const takenByName = order.order_taken_by_name || 'Unknown';
-    const bufferMin = Number(outlet?.ready_time_buffer_minutes ?? 60);
+    const bufferMin = Number(outlet?.ready_time_buffer_minutes ?? 0);
     const kotTime = subtractMinutesFromTime(order.delivery_time, bufferMin);
     const kotTime12 = to12Hour(kotTime);
     const deliveryTime12 = to12Hour(order.delivery_time);
@@ -1309,7 +1309,7 @@ const ManageOrders = () => {
       const outlet = outlets.find(o => o.id === order.outlet_id);
       const outletName = outlet ? outlet.name : 'N/A';
       const takenByName = order.order_taken_by_name || 'Unknown';
-      const bufferMin = Number(outlet?.ready_time_buffer_minutes ?? 60);
+      const bufferMin = Number(outlet?.ready_time_buffer_minutes ?? 0);
       const kotTime = subtractMinutesFromTime(order.delivery_time, bufferMin);
       const kotTime12 = to12Hour(kotTime);
       const deliveryTime12 = to12Hour(order.delivery_time);
