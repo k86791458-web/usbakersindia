@@ -1,0 +1,31 @@
+{
+  "summary": "Batch A quick-fix verification — All 9 items (a1..a9) PASS on the preview URL against seeded data. (a1) /activity-logs Description cell has NO 'truncate' class — renders full text with class 'whitespace-pre-wrap break-words' via data-testid=log-desc-<id> (20 rows validated). (a2) ManageOrders Edit dialog: data-testid=edit-special-instructions is a <TEXTAREA>; existing DB newlines round-trip intact and pressing Enter inserts \\n (verified round-trip 'Line1\\nLine2 next line\\nLine3...\\n\\nAPPENDED_LINE'). (a3) ManageOrders shows delivery date/time AND 'Booked: 02 Aug 2026' via data-testid=booking-date-<order.id> on all 3 order rows. (a4) KOT print HTML for order 834883 (petpooja_bill_numbers=['PP-TEST-1002','PP-TEST-1001']) contains 'PETPOOJA BILLING' block with 'Outlet: Test Outlet' and 'Bill No: PP-TEST-1002, PP-TEST-1001'. (a5) /new-order data-testid=customer-name-input auto-converts 'jOhN doE' → 'John Doe' as user types. (a6) /customers table shows 'Age' column header and Birthday cells formatted 'DD Month YYYY' (via formatBirthday). (a7) /deleted-orders shows Badge with data-testid=deleted-stage-<order_number> value 'hold' for seeded deleted order 633797, and data-testid=deleted-export-btn present. (a8) /customers data-testid=customer-sort, customer-gender-filter, customer-age-min, customer-age-max all present (JSX inspection shows sort options include Default, Pending High->Low / Low->High, Total Spent H->L / L->H, Name). (a9) Excel/export buttons present & clickable on /manage-orders (Excel), /hold-orders (hold-export-btn), /pending-orders (pending-export-btn), /credit-orders (credit-export-btn), /deleted-orders (deleted-export-btn), /customers (Export Excel). Backend regression: /api/orders/manage returns 200 sorted delivery_date DESC (verified), /orders/hold /pending /credit /deleted all return 200.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ManageOrders default date range", "issues": ["From/To Date default to today which HIDES all future-dated orders on first paint. New users with only future orders will see 'No orders found' until they click Clear Dates. Consider defaulting From=today and To=today+14 (or empty) so future orders are visible by default."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/seed_iteration_10.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ManageOrders.js remains at ~2975 lines — Edit Order dialog + KOT builders + Excel exporter + Add Delivery wizard could be split into standalone modules for maintainability.",
+    "toSentenceCase in /app/frontend/src/utils/formatters.js lower-cases the rest of each word. For legitimate names like 'McDonald', 'D'Souza', 'MoNa LiSa' the user-typed capitalisation of interior letters is lost. Acceptable for the requested behaviour but flag if users complain.",
+    "ManageOrders default From/To=localToday auto-filter can cause data invisibility for future-dated bookings — consider a broader default window or an obvious 'Showing today only' hint.",
+    "formatBirthday returns '-' for empty which is nice, but the Age column shows '' (empty string) when birthday is null — consider dash for consistency with Birthday column."
+  ],
+  "updated_files": [
+    "/app/backend/tests/seed_iteration_10.py (new — seeds 3 orders: one for Edit Special Instructions newline test, one with petpooja_bill_numbers for KOT test, one soft-deleted with deleted_from_lifecycle_status='hold' for Deleted Orders test)"
+  ],
+  "success_rate": {"backend": "100% (5/5 endpoints — manage/hold/pending/credit/deleted return 200; manage sort DESC confirmed)", "frontend": "100% (9/9 batch A items PASS)"},
+  "test_credentials": "Super Admin admin@usbakers.com / admin123 (unchanged)",
+  "seed_data_creation": "seed_iteration_10.py created: order 206eda11 (special_instructions multi-line for Edit test, order_number 645649), order 267a494d (petpooja_bill_numbers ['PP-TEST-1001','PP-TEST-1002'], order_number 834883), order 2cff5afd (soft-deleted with deleted_from_lifecycle_status='hold', deleted_from_status='on_hold', order_number 633797). Additionally set lifecycle_status='active' + status='confirmed' + paid_amount=700 on the two active orders so they appear in /orders/manage.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Batch A quick-fixes fully verified. Seeded 3 test orders (645649, 834883, 633797) plus existing 931275/262301 remain. Note: Manage Orders defaults From/To to today — click 'Clear Dates' (data-testid=manage-orders-clear-dates) to see all orders. To trigger Edit dialog: click the last ellipsis button in the Actions cell of any row, then click 'Edit Order' menu item. Print KOT opens a popup window (use browser context.expect_page() to capture). KOT PetPooja block only renders when order.petpooja_bill_numbers is a non-empty array — inject via direct Mongo update if needed.",
+  "rca_of_the_issue": "N/A — no bugs found for Batch A."
+}

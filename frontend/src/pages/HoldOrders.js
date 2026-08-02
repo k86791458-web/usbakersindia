@@ -11,8 +11,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { DollarSign, Trash2, Eye, Edit, Send } from 'lucide-react';
+import { DollarSign, Trash2, Eye, Edit, Send, Download } from 'lucide-react';
 import DeleteOrderDialog from '../components/DeleteOrderDialog';
+import { exportRowsToExcel, fmtDateTime } from '../utils/excelExport';
+import { formatBirthday } from '../utils/formatters';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -234,9 +236,44 @@ const HoldOrders = () => {
     <LayoutWithSidebar>
       <div className="space-y-6">
         {/* Header */}
-        <div>
-          <h2 className="text-3xl font-bold" style={{ color: '#e92587' }}>Hold Orders</h2>
-          <p className="text-gray-600 mt-1">Orders pending payment</p>
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h2 className="text-3xl font-bold" style={{ color: '#e92587' }}>Hold Orders</h2>
+            <p className="text-gray-600 mt-1">Orders pending payment</p>
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => exportRowsToExcel(
+              orders,
+              [
+                { key: 'order_number', label: 'Order #' },
+                { key: 'customer_info', label: 'Customer Name', fmt: (v) => v?.name || '' },
+                { key: 'customer_info', label: 'Customer Phone', fmt: (v) => v?.phone || '' },
+                { key: 'customer_info', label: 'Birthday', fmt: (v) => formatBirthday(v?.birthday) },
+                { key: 'outlet_id', label: 'Outlet', fmt: (v) => getOutletName(v) },
+                { key: 'flavour', label: 'Flavour' },
+                { key: 'size_pounds', label: 'Size (lbs)' },
+                { key: 'occasion', label: 'Occasion' },
+                { key: 'name_on_cake', label: 'Name on Cake' },
+                { key: 'special_instructions', label: 'Special Instructions', fmt: (v) => (v || '').replace(/\n/g, ' | ') },
+                { key: 'delivery_date', label: 'Delivery Date' },
+                { key: 'delivery_time', label: 'Delivery Time' },
+                { key: 'needs_delivery', label: 'Needs Delivery' },
+                { key: 'delivery_address', label: 'Delivery Address' },
+                { key: 'delivery_city', label: 'Delivery City' },
+                { key: 'total_amount', label: 'Total (₹)' },
+                { key: 'paid_amount', label: 'Paid (₹)' },
+                { key: 'pending_amount', label: 'Pending (₹)' },
+                { key: 'created_at', label: 'Booked At', fmt: fmtDateTime },
+              ],
+              'hold_orders',
+              'HoldOrders'
+            )}
+            data-testid="hold-export-btn"
+          >
+            <Download className="mr-2 h-4 w-4" />
+            Export Excel
+          </Button>
         </div>
 
         {success && (

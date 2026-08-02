@@ -6,7 +6,9 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { CreditCard, Gift, DollarSign, Package } from 'lucide-react';
+import { CreditCard, Gift, DollarSign, Package, Download } from 'lucide-react';
+import { exportRowsToExcel, fmtDateTime } from '../utils/excelExport';
+import { formatBirthday } from '../utils/formatters';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -59,9 +61,41 @@ const CreditOrders = () => {
   return (
     <LayoutWithSidebar>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold" style={{ color: '#e92587' }}>Credit Orders</h1>
-          <p className="text-gray-600 mt-1">Manage credit and complementary orders</p>
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="text-3xl font-bold" style={{ color: '#e92587' }}>Credit Orders</h1>
+            <p className="text-gray-600 mt-1">Manage credit and complementary orders</p>
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => exportRowsToExcel(
+              orders,
+              [
+                { key: 'order_number', label: 'Order #' },
+                { key: 'customer_info', label: 'Customer Name', fmt: (v) => v?.name || '' },
+                { key: 'customer_info', label: 'Customer Phone', fmt: (v) => v?.phone || '' },
+                { key: 'customer_info', label: 'Birthday', fmt: (v) => formatBirthday(v?.birthday) },
+                { key: 'flavour', label: 'Flavour' },
+                { key: 'size_pounds', label: 'Size (lbs)' },
+                { key: 'occasion', label: 'Occasion' },
+                { key: 'delivery_date', label: 'Delivery Date' },
+                { key: 'delivery_time', label: 'Delivery Time' },
+                { key: 'total_amount', label: 'Total (₹)' },
+                { key: 'paid_amount', label: 'Paid (₹)' },
+                { key: 'pending_amount', label: 'Pending (₹)' },
+                { key: 'status', label: 'Status' },
+                { key: 'is_complementary', label: 'Complementary' },
+                { key: 'is_credit_order', label: 'Credit Order' },
+                { key: 'created_at', label: 'Booked At', fmt: fmtDateTime },
+              ],
+              'credit_orders',
+              'CreditOrders'
+            )}
+            data-testid="credit-export-btn"
+          >
+            <Download className="mr-2 h-4 w-4" />
+            Export Excel
+          </Button>
         </div>
 
         {message.text && (

@@ -9,6 +9,8 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Download, Upload, Loader2 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { formatBirthday, ageFromBirthday } from '../utils/formatters';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -18,6 +20,10 @@ const Customers = () => {
   const [outlets, setOutlets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filterOutlet, setFilterOutlet] = useState('all');
+  const [filterGender, setFilterGender] = useState('all');
+  const [filterAgeMin, setFilterAgeMin] = useState('');
+  const [filterAgeMax, setFilterAgeMax] = useState('');
+  const [sortBy, setSortBy] = useState('none'); // none | pending_desc | pending_asc | spent_desc | spent_asc | name
   const [importMsg, setImportMsg] = useState('');
   const [importing, setImporting] = useState(false);
   const fileRef = useRef(null);
@@ -55,7 +61,8 @@ const Customers = () => {
       Name: c.name || '',
       Phone: c.phone || '',
       Email: c.email || '',
-      Birthday: c.birthday || '',
+      Birthday: formatBirthday(c.birthday),
+      Age: ageFromBirthday(c.birthday) ?? '',
       Gender: c.gender || '',
       'Total Orders': c.total_orders || 0,
       'Total Spent': c.total_spent || 0,
@@ -145,33 +152,117 @@ const Customers = () => {
           </div>
         )}
 
-        {/* Filter */}
+        {/* Filters + Sort */}
         <Card>
           <CardContent className="pt-6">
-            <div className="flex items-center space-x-4">
-              <Label>Filter by Outlet:</Label>
-              <Select value={filterOutlet} onValueChange={setFilterOutlet}>
-                <SelectTrigger className="w-64" data-testid="customer-outlet-filter">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Outlets</SelectItem>
-                  {outlets.map((outlet) => (
-                    <SelectItem key={outlet.id} value={outlet.id}>{outlet.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-3 items-end">
+              <div>
+                <Label>Outlet</Label>
+                <Select value={filterOutlet} onValueChange={setFilterOutlet}>
+                  <SelectTrigger className="mt-1" data-testid="customer-outlet-filter">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Outlets</SelectItem>
+                    {outlets.map((outlet) => (
+                      <SelectItem key={outlet.id} value={outlet.id}>{outlet.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Gender</Label>
+                <Select value={filterGender} onValueChange={setFilterGender}>
+                  <SelectTrigger className="mt-1" data-testid="customer-gender-filter">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All</SelectItem>
+                    <SelectItem value="male">Male</SelectItem>
+                    <SelectItem value="female">Female</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                    <SelectItem value="unspecified">Unspecified</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Age Min</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  max="150"
+                  value={filterAgeMin}
+                  onChange={(e) => setFilterAgeMin(e.target.value)}
+                  placeholder="e.g. 18"
+                  className="mt-1"
+                  data-testid="customer-age-min"
+                />
+              </div>
+              <div>
+                <Label>Age Max</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  max="150"
+                  value={filterAgeMax}
+                  onChange={(e) => setFilterAgeMax(e.target.value)}
+                  placeholder="e.g. 40"
+                  className="mt-1"
+                  data-testid="customer-age-max"
+                />
+              </div>
+              <div>
+                <Label>Sort By</Label>
+                <Select value={sortBy} onValueChange={setSortBy}>
+                  <SelectTrigger className="mt-1" data-testid="customer-sort">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Default</SelectItem>
+                    <SelectItem value="pending_desc">Pending Payment: High → Low</SelectItem>
+                    <SelectItem value="pending_asc">Pending Payment: Low → High</SelectItem>
+                    <SelectItem value="spent_desc">Total Spent: High → Low</SelectItem>
+                    <SelectItem value="spent_asc">Total Spent: Low → High</SelectItem>
+                    <SelectItem value="name">Name (A → Z)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </CardContent>
         </Card>
 
         {/* Customers Table */}
+        {(() => {
+          const minAge = filterAgeMin === '' ? null : Number(filterAgeMin);
+          const maxAge = filterAgeMax === '' ? null : Number(filterAgeMax);
+          let list = customers.filter((c) => {
+            if (filterGender !== 'all') {
+              const g = (c.gender || '').toLowerCase();
+              if (filterGender === 'unspecified') { if (g) return false; }
+              else if (g !== filterGender) return false;
+            }
+            if (minAge !== null || maxAge !== null) {
+              const age = ageFromBirthday(c.birthday);
+              if (age === null) return false;
+              if (minAge !== null && age < minAge) return false;
+              if (maxAge !== null && age > maxAge) return false;
+            }
+            return true;
+          });
+          const cmpNum = (a, b) => (a || 0) - (b || 0);
+          if (sortBy === 'pending_desc') list = [...list].sort((a, b) => cmpNum(b.pending_amount, a.pending_amount));
+          else if (sortBy === 'pending_asc') list = [...list].sort((a, b) => cmpNum(a.pending_amount, b.pending_amount));
+          else if (sortBy === 'spent_desc') list = [...list].sort((a, b) => cmpNum(b.total_spent, a.total_spent));
+          else if (sortBy === 'spent_asc') list = [...list].sort((a, b) => cmpNum(a.total_spent, b.total_spent));
+          else if (sortBy === 'name') list = [...list].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+          return (
         <Card>
           <CardHeader>
-            <CardTitle>All Customers ({customers.length})</CardTitle>
+            <CardTitle>All Customers ({list.length}{list.length !== customers.length ? ` / ${customers.length}` : ''})</CardTitle>
           </CardHeader>
           <CardContent>
-            {customers.length === 0 ? (
+            {list.length === 0 ? (
               <div className="text-center py-12 text-gray-500">No customers found.</div>
             ) : (
               <Table>
@@ -180,6 +271,7 @@ const Customers = () => {
                     <TableHead>Name</TableHead>
                     <TableHead>Phone</TableHead>
                     <TableHead>Birthday</TableHead>
+                    <TableHead>Age</TableHead>
                     <TableHead>Gender</TableHead>
                     <TableHead>Total Orders</TableHead>
                     <TableHead>Total Spent</TableHead>
@@ -187,11 +279,12 @@ const Customers = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {customers.map((customer, index) => (
-                    <TableRow key={index}>
+                  {list.map((customer, index) => (
+                    <TableRow key={index} data-testid={`customer-row-${customer.phone || index}`}>
                       <TableCell className="font-medium">{customer.name}</TableCell>
                       <TableCell>{customer.phone}</TableCell>
-                      <TableCell>{customer.birthday || '-'}</TableCell>
+                      <TableCell>{formatBirthday(customer.birthday)}</TableCell>
+                      <TableCell>{ageFromBirthday(customer.birthday) ?? '-'}</TableCell>
                       <TableCell>
                         {customer.gender ? (
                           <Badge variant="outline" className="capitalize">{customer.gender}</Badge>
@@ -219,6 +312,8 @@ const Customers = () => {
             )}
           </CardContent>
         </Card>
+          );
+        })()}
       </div>
     </LayoutWithSidebar>
   );

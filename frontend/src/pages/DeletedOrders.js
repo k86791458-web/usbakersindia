@@ -5,9 +5,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Trash2, RefreshCw, Loader2, CheckCircle, XCircle, ShieldAlert } from 'lucide-react';
+import { Trash2, RefreshCw, Loader2, CheckCircle, XCircle, ShieldAlert, Download } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useAuth } from '../contexts/AuthContext';
+import { exportRowsToExcel, fmtDateTime } from '../utils/excelExport';
+import { formatBirthday } from '../utils/formatters';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -78,6 +80,7 @@ const DeletedOrders = () => {
             <h2 className="text-3xl font-bold" style={{ color: '#e92587' }}>Deleted Orders</h2>
             <p className="text-gray-600 mt-1">Order deletions and approval requests</p>
           </div>
+          <div className="flex gap-2">
           <Button
             onClick={refresh}
             variant="outline"
@@ -87,6 +90,43 @@ const DeletedOrders = () => {
             <RefreshCw className="mr-2 h-4 w-4" />
             Refresh
           </Button>
+          <Button
+            onClick={() => exportRowsToExcel(
+              orders,
+              [
+                { key: 'order_number', label: 'Order #' },
+                { key: 'customer_info', label: 'Customer Name', fmt: (v) => v?.name || '' },
+                { key: 'customer_info', label: 'Customer Phone', fmt: (v) => v?.phone || '' },
+                { key: 'customer_info', label: 'Birthday', fmt: (v) => formatBirthday(v?.birthday) },
+                { key: 'customer_info', label: 'Gender', fmt: (v) => v?.gender || '' },
+                { key: 'flavour', label: 'Flavour' },
+                { key: 'size_pounds', label: 'Size (lbs)' },
+                { key: 'occasion', label: 'Occasion' },
+                { key: 'name_on_cake', label: 'Name on Cake' },
+                { key: 'delivery_date', label: 'Delivery Date' },
+                { key: 'delivery_time', label: 'Delivery Time' },
+                { key: 'total_amount', label: 'Total (₹)' },
+                { key: 'paid_amount', label: 'Paid (₹)' },
+                { key: 'pending_amount', label: 'Pending (₹)' },
+                { key: 'deleted_from_lifecycle_status', label: 'Deleted From (Lifecycle)', fmt: (v, r) => v || r.deleted_from_status || r.lifecycle_status || '' },
+                { key: 'deleted_from_status', label: 'Deleted From (Status)', fmt: (v, r) => v || r.status || '' },
+                { key: 'delete_reason', label: 'Reason' },
+                { key: 'delete_requested_by_name', label: 'Requested By' },
+                { key: 'delete_approved_by_name', label: 'Approved By' },
+                { key: 'updated_at', label: 'Deleted At', fmt: fmtDateTime },
+                { key: 'created_at', label: 'Booked At', fmt: fmtDateTime },
+              ],
+              'deleted_orders',
+              'DeletedOrders'
+            )}
+            variant="outline"
+            className="border-pink-600 text-pink-600 hover:bg-pink-50"
+            data-testid="deleted-export-btn"
+          >
+            <Download className="mr-2 h-4 w-4" />
+            Export Excel
+          </Button>
+          </div>
         </div>
 
         <Tabs value={tab} onValueChange={setTab}>

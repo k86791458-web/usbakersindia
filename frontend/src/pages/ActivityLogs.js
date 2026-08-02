@@ -349,7 +349,7 @@ const ActivityLogs = () => {
                           </div>
                         </TableCell>
                         <TableCell className="max-w-md">
-                          <div className="truncate" title={log.description}>
+                          <div className="whitespace-pre-wrap break-words" data-testid={`log-desc-${log.id}`}>
                             {log.description}
                           </div>
                         </TableCell>

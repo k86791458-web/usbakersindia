@@ -951,27 +951,97 @@ const ManageOrders = () => {
       return;
     }
 
+    const outletName = (id) => (outlets.find(o => o.id === id)?.name) || '';
+    const fmtDate = (v) => {
+      if (!v) return '';
+      try { return new Date(v).toLocaleString('en-IN'); } catch { return String(v); }
+    };
+    const yn = (b) => (b ? 'Yes' : 'No');
+
     const ws_data = [
-      ['Orders Export'],
-      ['Generated', new Date().toLocaleString()],
+      ['Manage Orders Export'],
+      ['Generated', new Date().toLocaleString('en-IN')],
+      ['Filters', JSON.stringify({
+        outlet: outletFilter, activeTab, dateFrom, dateTo,
+        statusFilter, occasion: occasionFilter, flavour: flavourFilter,
+        search: searchTerm,
+      })],
       [],
-      ['Order #', 'Customer', 'Phone', 'Type', 'Occasion', 'Flavour', 'Size', 'Delivery Date', 'Status', 'Total', 'Paid', 'Pending']
+      [
+        'Order #', 'Booked On', 'Outlet', 'Order Taken By',
+        'Order Type', 'Customer Name', 'Customer Phone', 'Alt Phone',
+        'Birthday', 'Gender',
+        'Receiver Name', 'Receiver Phone', 'Receiver Address',
+        'Needs Delivery', 'Delivery Address', 'Delivery City', 'Zone',
+        'Occasion', 'Flavour', 'Size (lbs)', 'Base Size (lbs)', 'Name on Cake',
+        'Special Instructions',
+        'Delivery Date', 'Delivery Time',
+        'Status', 'Lifecycle', 'Is Punch', 'Is Hold', 'Is Ready',
+        'Is Credit', 'Is Complementary', 'Pickup by Customer',
+        'Total (₹)', 'Paid (₹)', 'Pending (₹)', 'Delivery Charge (₹)', 'Discount (₹)',
+        'PetPooja Bill Nos', 'PetPooja Comment', 'Modified After Ready', 'Modification Count',
+        'Assigned Delivery Partner', 'Picked Up At', 'Reached At', 'Delivered At',
+        'Ready At', 'Photo Uploaded At',
+        'WhatsApp Alerts',
+        'Created At', 'Updated At',
+      ],
     ];
 
     filteredOrders.forEach(order => {
+      const ci = order.customer_info || {};
+      const ri = order.receiver_info || {};
       ws_data.push([
-        order.order_number,
-        order.customer_info?.name || 'N/A',
-        order.customer_info?.phone || 'N/A',
-        order.order_type,
-        order.occasion || 'N/A',
-        order.flavour || 'N/A',
-        order.size || 'N/A',
-        order.delivery_date || 'N/A',
-        order.status,
-        order.total_amount,
-        order.paid_amount,
-        order.pending_amount || 0
+        order.order_number || '',
+        fmtDate(order.created_at),
+        outletName(order.outlet_id),
+        order.order_taken_by_name || order.order_taken_by || '',
+        order.order_type || '',
+        ci.name || '',
+        ci.phone || '',
+        ci.alternate_phone || '',
+        ci.birthday || '',
+        ci.gender || '',
+        ri.name || '',
+        ri.phone || '',
+        ri.address || '',
+        yn(order.needs_delivery),
+        order.delivery_address || '',
+        order.delivery_city || '',
+        order.zone_id || '',
+        order.occasion || '',
+        order.flavour || '',
+        order.size_pounds ?? '',
+        order.base_size ?? '',
+        order.name_on_cake || '',
+        (order.special_instructions || '').replace(/\r?\n/g, ' | '),
+        order.delivery_date || '',
+        order.delivery_time || '',
+        order.status || '',
+        order.lifecycle_status || '',
+        yn(order.is_punch_order),
+        yn(order.is_hold),
+        yn(order.is_ready),
+        yn(order.is_credit_order),
+        yn(order.is_complementary),
+        yn(order.pickup_by_customer),
+        order.total_amount ?? 0,
+        order.paid_amount ?? 0,
+        order.pending_amount ?? 0,
+        order.delivery_charge ?? 0,
+        order.discount_amount ?? 0,
+        (order.petpooja_bill_numbers || []).join(', '),
+        order.petpooja_comment || '',
+        yn(order.modified_after_ready),
+        order.modification_count ?? 0,
+        order.assigned_delivery_partner_name || order.assigned_delivery_partner || '',
+        fmtDate(order.picked_up_at),
+        fmtDate(order.reached_at),
+        fmtDate(order.delivered_at),
+        fmtDate(order.ready_at),
+        fmtDate(order.photo_uploaded_at),
+        yn(order.whatsapp_alerts),
+        fmtDate(order.created_at),
+        fmtDate(order.updated_at),
       ]);
     });
 
@@ -1144,6 +1214,10 @@ const ManageOrders = () => {
           <hr class="divider" />
           <div style="font-size:12px;">PETPOOJA BILLING</div>
           <div class="row">
+            <span>Outlet:</span>
+            <span>${outletName}</span>
+          </div>
+          <div class="row">
             <span>Bill No:</span>
             <span>${order.petpooja_bill_numbers.join(', ')}</span>
           </div>
@@ -1225,6 +1299,7 @@ const ManageOrders = () => {
         ${order.petpooja_bill_numbers && order.petpooja_bill_numbers.length > 0 ? `
         <hr class="divider" />
         <div style="font-size:12px;">PETPOOJA BILLING</div>
+        <div class="row"><span>Outlet:</span><span>${outletName}</span></div>
         <div class="row"><span>Bill No:</span><span>${order.petpooja_bill_numbers.join(', ')}</span></div>
         <div class="center" style="margin-top:4px; font-size:12px; border:1.5px solid #000; padding:3px;">BILLING DONE IN PETPOOJA</div>
         ` : ''}
@@ -1676,6 +1751,11 @@ const ManageOrders = () => {
                                 <span>{order.delivery_date}</span>
                               </div>
                               <div className="text-sm text-gray-500">{order.delivery_time}</div>
+                              {order.created_at && (
+                                <div className="text-[11px] text-gray-400 mt-1" data-testid={`booking-date-${order.id}`}>
+                                  Booked: {new Date(order.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                                </div>
+                              )}
                             </TableCell>
                             <TableCell>
                               <div className="text-sm">

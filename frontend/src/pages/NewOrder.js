@@ -14,6 +14,7 @@ import { Upload, Plus, X, Mic, Square, Play, Trash2, RefreshCw, AlertTriangle } 
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import ImageEditor from '../components/ImageEditor';
+import { toSentenceCase } from '../utils/formatters';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -597,7 +598,7 @@ const NewOrder = () => {
                     onChange={(e) =>
                       setFormData({
                         ...formData,
-                        customer_info: { ...formData.customer_info, name: e.target.value }
+                        customer_info: { ...formData.customer_info, name: toSentenceCase(e.target.value) }
                       })
                     }
                     data-testid="customer-name-input"

@@ -4,9 +4,11 @@ import LayoutWithSidebar from '../components/LayoutWithSidebar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Clock, DollarSign, User, MapPin, CreditCard, Trash2 } from 'lucide-react';
+import { Clock, DollarSign, User, MapPin, CreditCard, Trash2, Download } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import DeleteOrderDialog from '../components/DeleteOrderDialog';
+import { exportRowsToExcel, fmtDateTime } from '../utils/excelExport';
+import { formatBirthday } from '../utils/formatters';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -104,11 +106,44 @@ const PendingOrders = () => {
     <LayoutWithSidebar>
       <div className="space-y-6">
         {/* Header */}
-        <div>
-          <h1 className="text-3xl font-bold" style={{ color: '#e92587' }}>Pending Orders</h1>
-          <p className="text-gray-600 mt-1">
-            Orders waiting for {threshold}% payment to move to Manage Orders
-          </p>
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="text-3xl font-bold" style={{ color: '#e92587' }}>Pending Orders</h1>
+            <p className="text-gray-600 mt-1">
+              Orders waiting for {threshold}% payment to move to Manage Orders
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => exportRowsToExcel(
+              orders,
+              [
+                { key: 'order_number', label: 'Order #' },
+                { key: 'customer_info', label: 'Customer Name', fmt: (v) => v?.name || '' },
+                { key: 'customer_info', label: 'Customer Phone', fmt: (v) => v?.phone || '' },
+                { key: 'customer_info', label: 'Birthday', fmt: (v) => formatBirthday(v?.birthday) },
+                { key: 'flavour', label: 'Flavour' },
+                { key: 'size_pounds', label: 'Size (lbs)' },
+                { key: 'occasion', label: 'Occasion' },
+                { key: 'name_on_cake', label: 'Name on Cake' },
+                { key: 'delivery_date', label: 'Delivery Date' },
+                { key: 'delivery_time', label: 'Delivery Time' },
+                { key: 'needs_delivery', label: 'Needs Delivery' },
+                { key: 'delivery_address', label: 'Delivery Address' },
+                { key: 'total_amount', label: 'Total (₹)' },
+                { key: 'paid_amount', label: 'Paid (₹)' },
+                { key: 'pending_amount', label: 'Pending (₹)' },
+                { key: 'order_taken_by_name', label: 'Taken By' },
+                { key: 'created_at', label: 'Booked At', fmt: fmtDateTime },
+              ],
+              'pending_orders',
+              'PendingOrders'
+            )}
+            data-testid="pending-export-btn"
+          >
+            <Download className="mr-2 h-4 w-4" />
+            Export Excel
+          </Button>
         </div>
 
         {/* Stats Card */}
