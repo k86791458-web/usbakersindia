@@ -21,6 +21,18 @@ const KitchenDashboardNew = () => {
   const [loading, setLoading] = useState(true);
   const [success, setSuccess] = useState('');
   const [error, setError] = useState('');
+  // c1: Right-sidebar tab — 'queue' (confirmed + in_progress) | 'ready' (ready + ready_to_deliver)
+  const [sidebarTab, setSidebarTab] = useState('queue');
+  // c2: Track the local date the frontend is fetching for. When the wall-clock
+  // ticks past midnight IST, we auto-refetch so "next day's orders" appear at 00:00.
+  const localTodayStr = () => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  const [fetchDate, setFetchDate] = useState(localTodayStr);
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -32,7 +44,9 @@ const KitchenDashboardNew = () => {
   const fetchOrders = useCallback(async () => {
     try {
       const token = localStorage.getItem('token');
+      // c2: Pass explicit local (IST) date so the kitchen rolls over at 00:00 local, not 05:30 IST (UTC today).
       const response = await axios.get(`${API}/kitchen/orders`, {
+        params: { date: fetchDate },
         headers: { Authorization: `Bearer ${token}` }
       });
       // Sort: waiting -> preparing -> ready (ready last)
@@ -50,7 +64,8 @@ const KitchenDashboardNew = () => {
       console.error('Failed to fetch orders:', err);
       setLoading(false);
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchDate]);
 
   const fetchTimeSlots = async () => {
     try {
@@ -65,7 +80,21 @@ const KitchenDashboardNew = () => {
     fetchTimeSlots();
     const interval = setInterval(fetchOrders, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchOrders]);
+
+  // c2: Every minute, check if the local date changed → auto-switch to the new day.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const nowDate = localTodayStr();
+      if (nowDate !== fetchDate) {
+        setFetchDate(nowDate);           // triggers refetch via fetchOrders dep
+        setCurrentOrder(null);
+        setSuccess(`Rolled over to ${nowDate}`);
+        setTimeout(() => setSuccess(''), 4000);
+      }
+    }, 60 * 1000);
+    return () => clearInterval(id);
+  }, [fetchDate]);
 
   // ===== TV MODE: wake-lock, daily reload at 3 AM, auto-fullscreen =====
   useEffect(() => {
@@ -281,6 +310,53 @@ const KitchenDashboardNew = () => {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <RefreshCw className="h-8 w-8 animate-spin" style={{ color: '#e92587' }} />
+      </div>
+    );
+  }
+
+  // c3: POS / LED-browser simple fallback — accessible via /kitchen?pos=1
+  // No advanced CSS features, no wake-lock, no fullscreen APIs.
+  // Renders a plain HTML table so old TV browsers (Samsung Tizen, LG WebOS,
+  // Chromium <60 kiosk builds) never see a blank screen.
+  const posMode = searchParams.get('pos') === '1';
+  if (posMode) {
+    return (
+      <div style={{ padding: 12, fontFamily: 'Arial, sans-serif', color: '#111', background: '#fff', minHeight: '100vh' }} data-testid="kitchen-pos-mode">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <h1 style={{ margin: 0, fontSize: 22 }}>US BAKERS — Kitchen Orders ({fetchDate})</h1>
+          <div style={{ fontSize: 14 }}>{new Date().toLocaleTimeString()}</div>
+        </div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+          <thead>
+            <tr style={{ background: '#f3f4f6' }}>
+              <th style={{ border: '1px solid #ccc', padding: 8, textAlign: 'left' }}>#</th>
+              <th style={{ border: '1px solid #ccc', padding: 8, textAlign: 'left' }}>Time</th>
+              <th style={{ border: '1px solid #ccc', padding: 8, textAlign: 'left' }}>Cake</th>
+              <th style={{ border: '1px solid #ccc', padding: 8, textAlign: 'left' }}>Name on Cake</th>
+              <th style={{ border: '1px solid #ccc', padding: 8, textAlign: 'left' }}>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {orders.length === 0 && (
+              <tr><td colSpan="5" style={{ padding: 24, textAlign: 'center', color: '#666' }}>No orders for today.</td></tr>
+            )}
+            {orders.map(o => (
+              <tr key={o.id} data-testid={`pos-row-${o.order_number}`}
+                  style={{
+                    background: (o.status === 'ready' || o.status === 'ready_to_deliver') ? '#dcfce7'
+                              : o.status === 'in_progress' ? '#fef3c7'
+                              : '#fff'
+                  }}>
+                <td style={{ border: '1px solid #ccc', padding: 8, fontWeight: 'bold' }}>#{o.order_number}</td>
+                <td style={{ border: '1px solid #ccc', padding: 8 }}>{to12Hour(o.delivery_time)}</td>
+                <td style={{ border: '1px solid #ccc', padding: 8 }}>{o.flavour} · {o.size_pounds} Lbs</td>
+                <td style={{ border: '1px solid #ccc', padding: 8 }}>{o.name_on_cake || '-'}</td>
+                <td style={{ border: '1px solid #ccc', padding: 8, textTransform: 'uppercase' }}>{(o.status || '').replace(/_/g, ' ')}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p style={{ marginTop: 12, fontSize: 12, color: '#666' }}>Auto-refresh every 15s · {orders.length} order(s)</p>
       </div>
     );
   }
@@ -504,16 +580,63 @@ const KitchenDashboardNew = () => {
             )}
           </div>
 
-          {/* Right - Order List by Time Slots */}
+          {/* Right - Order List with In-Queue / Ready tabs */}
           <div className="w-1/4 overflow-y-auto">
             <Card className="h-full">
               <CardHeader className="pb-2 sticky top-0 bg-white z-10 border-b">
                 <CardTitle className="text-sm flex items-center gap-2">
                   <Timer className="h-4 w-4" /> Orders ({orders.length})
                 </CardTitle>
+                <div className="flex gap-1 mt-2">
+                  <button
+                    onClick={() => setSidebarTab('queue')}
+                    className={`flex-1 px-2 py-1.5 text-xs font-medium rounded transition-colors ${
+                      sidebarTab === 'queue'
+                        ? 'bg-pink-600 text-white shadow-sm'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                    data-testid="kitchen-sidebar-tab-queue"
+                  >
+                    In Queue ({waitingCount + preparingCount})
+                  </button>
+                  <button
+                    onClick={() => setSidebarTab('ready')}
+                    className={`flex-1 px-2 py-1.5 text-xs font-medium rounded transition-colors ${
+                      sidebarTab === 'ready'
+                        ? 'bg-green-600 text-white shadow-sm'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                    data-testid="kitchen-sidebar-tab-ready"
+                  >
+                    Ready ({readyCount})
+                  </button>
+                </div>
               </CardHeader>
               <CardContent className="p-0">
-                {groupedOrders().map((group) => (
+                {(() => {
+                  const scoped = sidebarTab === 'ready'
+                    ? orders.filter(o => o.status === 'ready' || o.status === 'ready_to_deliver')
+                    : orders.filter(o => o.status === 'confirmed' || o.status === 'in_progress');
+                  if (scoped.length === 0) {
+                    return (
+                      <div className="p-6 text-center text-xs text-gray-400" data-testid={`kitchen-sidebar-empty-${sidebarTab}`}>
+                        {sidebarTab === 'ready' ? 'No ready orders yet.' : 'No orders in queue.'}
+                      </div>
+                    );
+                  }
+                  // Group by time slot within the scoped list
+                  const groups = {};
+                  scoped.forEach(order => {
+                    const slot = getTimeSlotForOrder(order);
+                    if (!groups[slot]) groups[slot] = [];
+                    groups[slot].push(order);
+                  });
+                  const groupList = Object.keys(groups).sort((a, b) => {
+                    const tA = parseTimeTo24(a.split(' - ')[0]) || 0;
+                    const tB = parseTimeTo24(b.split(' - ')[0]) || 0;
+                    return tA - tB;
+                  }).map(key => ({ slot: key, orders: groups[key] }));
+                  return groupList.map((group) => (
                   <div key={group.slot} className="border-b last:border-b-0">
                     <div className="bg-gray-100 px-3 py-2">
                       <p className="text-xs font-bold text-gray-700 flex items-center gap-1">
@@ -565,7 +688,8 @@ const KitchenDashboardNew = () => {
                       </div>
                     ))}
                   </div>
-                ))}
+                  ));
+                })()}
               </CardContent>
             </Card>
           </div>

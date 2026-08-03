@@ -34,7 +34,7 @@ import {
   Trash2,
   Camera
 } from 'lucide-react';
-import { Mic, BadgePercent } from 'lucide-react';
+import { Mic, BadgePercent, Send } from 'lucide-react';
 import axios from 'axios';
 import * as XLSX from 'xlsx';
 import ImageEditor from '../components/ImageEditor';
@@ -175,6 +175,13 @@ const ManageOrders = () => {
   const [outletFilter, setOutletFilter] = useState('all');
   const [flavoursList, setFlavoursList] = useState([]);
   const [occasionsList, setOccasionsList] = useState([]);
+  // c6: Send cake photos dialog state
+  const [sendPhotosOpen, setSendPhotosOpen] = useState(false);
+  const [sendPhotosOrder, setSendPhotosOrder] = useState(null);
+  const [sendPhotosDate, setSendPhotosDate] = useState('');
+  const [sendPhotosIncludeRef, setSendPhotosIncludeRef] = useState(true);
+  const [sendPhotosIncludeActual, setSendPhotosIncludeActual] = useState(true);
+  const [sendPhotosSending, setSendPhotosSending] = useState(false);
 
   const getImageUrl = (url) => {
     if (!url) return '';
@@ -297,6 +304,40 @@ const ManageOrders = () => {
     setAssignOrderId(orderId);
     setSelectedDeliveryPerson('');
     setAssignDialogOpen(true);
+  };
+
+  // c6: Send cake photos dialog helpers
+  const openSendCakePhotosDialog = (order) => {
+    setSendPhotosOrder(order);
+    // Default date = today (IST-safe local)
+    setSendPhotosDate(localToday());
+    setSendPhotosIncludeRef(!!order.cake_image_url);
+    setSendPhotosIncludeActual(!!order.actual_cake_image_url);
+    setSendPhotosOpen(true);
+  };
+
+  const submitSendCakePhotos = async () => {
+    if (!sendPhotosOrder) return;
+    setSendPhotosSending(true);
+    try {
+      await axios.post(
+        `${API_URL}/api/orders/${sendPhotosOrder.id}/send-cake-photos`,
+        {
+          date: sendPhotosDate || localToday(),
+          include_reference: sendPhotosIncludeRef,
+          include_actual: sendPhotosIncludeActual,
+        },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setSendPhotosOpen(false);
+      setMessage({ type: 'success', text: 'Cake photos queued to send on WhatsApp.' });
+      setTimeout(() => setMessage(null), 3500);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.detail || 'Failed to send cake photos' });
+      setTimeout(() => setMessage(null), 4000);
+    } finally {
+      setSendPhotosSending(false);
+    }
   };
 
   const handleAssignDelivery = async () => {
@@ -1865,6 +1906,21 @@ const ManageOrders = () => {
                                   <Badge className="bg-green-600 text-white text-xs">✓ Photo</Badge>
                                 )}
 
+                                {/* c6: Manual "Send cake photos to customer" (WhatsApp) */}
+                                {order.actual_cake_image_url && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="border-pink-600 text-pink-700 hover:bg-pink-50 text-xs"
+                                    onClick={() => openSendCakePhotosDialog(order)}
+                                    data-testid={`send-cake-photos-btn-${order.id}`}
+                                    title="Send reference + actual cake photo to the customer on WhatsApp"
+                                  >
+                                    <Send className="h-3 w-3 mr-1" />
+                                    Send Photos
+                                  </Button>
+                                )}
+
                                 {/* Assign Delivery Person Button */}
                                 {order.status === 'ready_to_deliver' && !order.assigned_delivery_partner && order.needs_delivery && (
                                   <Button
@@ -2806,6 +2862,74 @@ const ManageOrders = () => {
                 {assigning ? 'Assigning...' : 'Assign & Dispatch'}
               </Button>
             </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* c6: Send cake photos to customer dialog */}
+        <Dialog open={sendPhotosOpen} onOpenChange={setSendPhotosOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Send Cake Photos to Customer</DialogTitle>
+              <DialogDescription>
+                Sends the reference image (what the customer provided) and the actual cake image
+                (what your team made) to the customer on WhatsApp. Sent date defaults to today.
+              </DialogDescription>
+            </DialogHeader>
+            {sendPhotosOrder && (
+              <div className="space-y-3">
+                <div className="text-sm text-gray-700">
+                  Order <span className="font-semibold">#{sendPhotosOrder.order_number}</span> — {sendPhotosOrder.customer_info?.name}
+                </div>
+                <div>
+                  <Label htmlFor="send-photos-date">Send Date</Label>
+                  <Input
+                    id="send-photos-date"
+                    type="date"
+                    value={sendPhotosDate}
+                    onChange={(e) => setSendPhotosDate(e.target.value)}
+                    className="mt-1"
+                    data-testid="send-photos-date"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="send-photos-ref"
+                    type="checkbox"
+                    checked={sendPhotosIncludeRef}
+                    onChange={(e) => setSendPhotosIncludeRef(e.target.checked)}
+                    disabled={!sendPhotosOrder.cake_image_url}
+                    data-testid="send-photos-include-ref"
+                  />
+                  <Label htmlFor="send-photos-ref" className="text-sm">
+                    Include reference image {!sendPhotosOrder.cake_image_url && '(not available)'}
+                  </Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="send-photos-actual"
+                    type="checkbox"
+                    checked={sendPhotosIncludeActual}
+                    onChange={(e) => setSendPhotosIncludeActual(e.target.checked)}
+                    disabled={!sendPhotosOrder.actual_cake_image_url}
+                    data-testid="send-photos-include-actual"
+                  />
+                  <Label htmlFor="send-photos-actual" className="text-sm">
+                    Include actual cake image {!sendPhotosOrder.actual_cake_image_url && '(not available)'}
+                  </Label>
+                </div>
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="outline" onClick={() => setSendPhotosOpen(false)}>Cancel</Button>
+                  <Button
+                    onClick={submitSendCakePhotos}
+                    disabled={sendPhotosSending || (!sendPhotosIncludeRef && !sendPhotosIncludeActual)}
+                    className="bg-pink-600 hover:bg-pink-700 text-white"
+                    data-testid="send-photos-submit"
+                  >
+                    {sendPhotosSending ? 'Sending…' : 'Send on WhatsApp'}
+                  </Button>
+                </div>
+              </div>
+            )}
           </DialogContent>
         </Dialog>
 

@@ -576,6 +576,7 @@ class WhatsAppTemplateEvent(str, Enum):
     OUT_FOR_DELIVERY = "out_for_delivery"
     DELIVERED = "delivered"
     ORDER_UPDATED = "order_updated"
+    CAKE_PHOTOS_SENT = "cake_photos_sent"  # c6: manual send of reference + actual cake images
 
 class WhatsAppTemplate(BaseModel):
     """Configuration for a WhatsApp template for a specific event"""
@@ -2822,6 +2823,85 @@ async def update_order(
         logger.error(f"failed to queue ORDER_UPDATED WhatsApp for {order_id}: {_e}")
 
     return {"message": "Order updated successfully", "changed_fields": changed_fields}
+
+
+# c6: Manual "Send cake photos to customer" trigger — sends both reference + actual images.
+class SendCakePhotosRequest(BaseModel):
+    date: Optional[str] = None   # Defaults to today (frontend passes local today)
+    include_reference: bool = True
+    include_actual: bool = True
+
+@api_router.post("/orders/{order_id}/send-cake-photos")
+async def send_cake_photos_to_customer(
+    order_id: str,
+    payload: SendCakePhotosRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+):
+    """Manually send the reference + actual cake images to the customer via WhatsApp.
+    Uses the CAKE_PHOTOS_SENT template if configured, else falls back to ORDER_UPDATED.
+    Logs the action so we know when it was triggered and by whom."""
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    ref_url = order.get("cake_image_url") if payload.include_reference else None
+    act_url = order.get("actual_cake_image_url") if payload.include_actual else None
+    if not ref_url and not act_url:
+        raise HTTPException(status_code=400, detail="No cake images available on this order")
+
+    send_date = payload.date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Fire the WhatsApp send via background task. We piggyback on ORDER_UPDATED if
+    # the CAKE_PHOTOS_SENT template is not configured. The AiSensy template can be
+    # authored with {{1}} = customer name, {{2}} = order number, {{3}} = reference image URL,
+    # {{4}} = actual image URL — the sender picks up image URLs automatically from
+    # order fields when the template has them wired.
+    try:
+        template = await db.whatsapp_templates.find_one(
+            {"event_type": WhatsAppTemplateEvent.CAKE_PHOTOS_SENT.value, "is_enabled": True},
+            {"_id": 0},
+        )
+        event_to_send = (
+            WhatsAppTemplateEvent.CAKE_PHOTOS_SENT if template else WhatsAppTemplateEvent.ORDER_UPDATED
+        )
+        background_tasks.add_task(send_whatsapp_notification, order_id, event_to_send)
+    except Exception as _e:
+        logger.error(f"send-cake-photos: WhatsApp queue failed for {order_id}: {_e}")
+
+    # Persist a record so we know when this was last triggered
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "cake_photos_sent_at": datetime.now(timezone.utc).isoformat(),
+            "cake_photos_sent_by": current_user.id,
+            "cake_photos_send_date": send_date,
+        }},
+    )
+
+    # Activity log
+    try:
+        await create_activity_log(
+            user=current_user,
+            action_type="cake_photos_sent",
+            description=(
+                f"Sent cake photos to customer for order {order.get('order_number', order_id)}"
+                f" (ref={'yes' if ref_url else 'no'}, actual={'yes' if act_url else 'no'})"
+            ),
+            entity_type="order",
+            entity_id=order_id,
+            order_number=order.get("order_number"),
+            outlet_id=order.get("outlet_id"),
+        )
+    except Exception as _e:
+        logger.error(f"activity_log failed (send-cake-photos): {_e}")
+
+    return {
+        "message": "Cake photos queued for WhatsApp send",
+        "date": send_date,
+        "reference_image": ref_url,
+        "actual_image": act_url,
+    }
 
 
 @api_router.get("/orders/download-pdf")
