@@ -199,11 +199,17 @@ class PetPoojaBill(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     bill_number: str
     outlet_id: str
+    outlet_name: Optional[str] = None  # d4: display outlet name in Sync page
     customer_name: Optional[str] = None
     customer_phone: Optional[str] = None
     total_amount: float = 0.0
     items: List[Dict[str, Any]] = []  # List of items in bill
     has_custom_cake: bool = False  # True if bill contains "Custom Cake" item
+    # d5: C16 short-code classification.
+    # `custom_cake_shortcode` = "C16" when the bill has C16 items, "OTHER" when it has custom-cake
+    # items but NOT C16 (must be reviewed separately), None when no custom cake.
+    custom_cake_shortcode: Optional[str] = None
+    custom_cake_item_names: List[str] = []
     synced_to_order: bool = False  # True if converted to order
     order_id: Optional[str] = None  # Order ID if synced
     sync_attempted_at: Optional[datetime] = None
@@ -1731,9 +1737,19 @@ async def impersonate_user(
 async def get_petpooja_bills(
     outlet_id: Optional[str] = None,
     synced: Optional[bool] = None,
+    view: Optional[str] = None,   # d4: 'unsynced_custom' — only unsynced bills with custom cake
+    shortcode: Optional[str] = None,  # d5: 'C16', 'OTHER', 'MIXED', 'NONE'
     current_user: User = Depends(get_current_user)
 ):
-    """Get all PetPooja bills with sync status"""
+    """Get all PetPooja bills with sync status.
+
+    Query params:
+      - synced=true/false  → filter by sync status
+      - view=unsynced_custom → show only unsynced bills that contain a custom cake (d4)
+      - shortcode=C16|OTHER|MIXED|NONE → filter by C16 short-code classification (d5)
+      - outlet_id → filter by outlet
+    Bills also include `outlet_name` so the Sync page can show it.
+    """
     query = {}
     
     # Filter by outlet if provided
@@ -1746,8 +1762,38 @@ async def get_petpooja_bills(
     # Filter by sync status if provided
     if synced is not None:
         query["synced_to_order"] = synced
+
+    # d4: "View All" now defaults to unsynced-custom-cake bills so admins don't
+    # scroll past hundreds of already-processed rows.
+    if view == "unsynced_custom":
+        query["synced_to_order"] = False
+        query["has_custom_cake"] = True
+
+    # d5: Short-code filter
+    if shortcode:
+        if shortcode.upper() == "NONE":
+            query["$or"] = [
+                {"custom_cake_shortcode": {"$exists": False}},
+                {"custom_cake_shortcode": None},
+            ]
+        else:
+            query["custom_cake_shortcode"] = shortcode.upper()
     
-    bills = await db.petpooja_bills.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    bills = await db.petpooja_bills.find(query, {"_id": 0}).sort("created_at", -1).to_list(20000)
+
+    # d4: Enrich with outlet_name for older bill docs that were created before outlet_name existed
+    outlet_cache: Dict[str, str] = {}
+    for b in bills:
+        if not b.get('outlet_name') and b.get('outlet_id'):
+            oid = b['outlet_id']
+            if oid in outlet_cache:
+                b['outlet_name'] = outlet_cache[oid]
+            else:
+                odoc = await db.outlets.find_one({"id": oid}, {"_id": 0, "name": 1})
+                nm = odoc.get('name') if odoc else None
+                outlet_cache[oid] = nm
+                b['outlet_name'] = nm
+
     return bills
 
 @api_router.post("/petpooja-bills/sync/{bill_id}")
@@ -1778,6 +1824,41 @@ async def sync_petpooja_bill(
     
     return {"message": "Sync attempted - feature under development"}
 
+
+# d3: Clear the bill_needs_resync flag on an order once the admin has re-synced the bill in PetPooja.
+@api_router.post("/orders/{order_id}/clear-bill-resync-flag")
+async def clear_bill_resync_flag(
+    order_id: str,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN])),
+):
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {
+            "bill_needs_resync": False,
+            "bill_resync_cleared_at": datetime.now(timezone.utc).isoformat(),
+            "bill_resync_cleared_by": current_user.id,
+        }},
+    )
+    return {"message": "Bill re-sync flag cleared"}
+
+
+# d3: List orders that were edited after being billed in PetPooja — they need re-sync.
+@api_router.get("/petpooja/needs-resync")
+async def list_orders_needing_bill_resync(
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+):
+    query = {"bill_needs_resync": True, "is_deleted": False}
+    if outlet_id:
+        query["outlet_id"] = outlet_id
+    elif current_user.outlet_id and current_user.role != UserRole.SUPER_ADMIN:
+        query["outlet_id"] = current_user.outlet_id
+    orders = await db.orders.find(query, {"_id": 0}).sort("bill_resync_flagged_at", -1).to_list(20000)
+    return orders
+
 # ==================== CREDIT ORDERS ====================
 
 @api_router.post("/orders/{order_id}/mark-credit")
@@ -1806,9 +1887,25 @@ async def mark_order_as_credit(
 async def get_credit_orders(
     current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
 ):
-    """Get all credit orders"""
+    """Get credit orders (excludes complementary — those live under /orders/complementary)."""
+    query = {
+        "is_credit_order": True,
+        "is_deleted": False,
+        # d1: Complementary orders should not appear under "Credit Orders" — they get their own tab.
+        "$or": [{"is_complementary": {"$exists": False}}, {"is_complementary": False}],
+    }
+    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(20000)
+    return orders
+
+
+# d1: Complementary Orders — a dedicated list of orders that are gifted / on-the-house.
+@api_router.get("/orders/complementary")
+async def get_complementary_orders(
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN, UserRole.ORDER_MANAGER]))
+):
+    """Get all complementary orders (marked by super admin via /mark-complementary)."""
     orders = await db.orders.find(
-        {"is_credit_order": True, "is_deleted": False},
+        {"is_complementary": True, "is_deleted": False},
         {"_id": 0}
     ).sort("created_at", -1).to_list(20000)
     return orders
@@ -2788,6 +2885,25 @@ async def update_order(
     changed_fields = [k for k in update_fields.keys() if k not in ('updated_at', 'modification_count')]
     before_snapshot = {k: order.get(k) for k in changed_fields}
     after_snapshot = {k: update_fields.get(k) for k in changed_fields}
+
+    # d3: Flag bill re-sync needed if the order has already been billed in PetPooja and
+    # any meaningful field changed. Cake amount / instructions / flavour / size / name-on-cake
+    # / delivery date-time changes all invalidate the previously-synced bill.
+    RESYNC_TRIGGER_FIELDS = {
+        'flavour', 'size_pounds', 'base_size', 'name_on_cake',
+        'special_instructions', 'delivery_date', 'delivery_time',
+        'total_amount', 'delivery_charge', 'discount_amount',
+        'occasion', 'cake_image_url', 'secondary_images',
+    }
+    if (order.get('petpooja_bill_numbers') or []) and any(f in RESYNC_TRIGGER_FIELDS for f in changed_fields):
+        resync_flagged_at = datetime.now(timezone.utc).isoformat()
+        await db.orders.update_one(
+            {"id": order_id},
+            {"$set": {
+                "bill_needs_resync": True,
+                "bill_resync_flagged_at": resync_flagged_at,
+            }},
+        )
 
     log = Log(
         order_id=order_id,
@@ -4766,6 +4882,64 @@ async def handle_petpooja_standard_format(request_data: Dict[str, Any]):
         # Use cake-only amount for syncing, not full bill total
         sync_amount = cake_only_amount if has_custom_cake else total_amount
         logger.info(f"PetPooja bill total: {total_amount}, cake-only amount: {cake_only_amount}, sync amount: {sync_amount}")
+
+        # d5: Custom-cake short-code classification (C16 vs OTHER).
+        # We look at the full item text (name + shortcode + itemcode + code) to be robust
+        # to varying PetPooja payloads. C16 is the recognised short-code for the standard
+        # custom cake; anything else that's a custom cake needs to be reviewed separately.
+        custom_cake_shortcode = None
+        custom_cake_item_names = []
+        if has_custom_cake:
+            has_c16 = False
+            has_non_c16 = False
+            for item in order_items:
+                blob_parts = [
+                    str(item.get('name', '')),
+                    str(item.get('shortcode', '')),
+                    str(item.get('short_code', '')),
+                    str(item.get('itemcode', '')),
+                    str(item.get('item_code', '')),
+                    str(item.get('code', '')),
+                    str(item.get('category_name', '')),
+                ]
+                blob = " ".join(blob_parts).upper()
+                item_low = str(item.get('name', '')).lower()
+                cat_low = str(item.get('category_name', '')).lower()
+                is_cake = (
+                    any(k in item_low for k in ['cake', 'pastry', 'pasteries', 'forest', 'truffle', 'custom'])
+                    or any(k in cat_low for k in ['cake', 'pastry', 'pasteries', 'pastries', 'custom'])
+                )
+                if not is_cake:
+                    continue
+                custom_cake_item_names.append(item.get('name', ''))
+                # Regex-word C16 avoids matching e.g. "C160"
+                if re.search(r"\bC16\b", blob):
+                    has_c16 = True
+                else:
+                    has_non_c16 = True
+            if has_c16 and not has_non_c16:
+                custom_cake_shortcode = "C16"
+            elif has_c16 and has_non_c16:
+                custom_cake_shortcode = "MIXED"
+            elif has_non_c16:
+                custom_cake_shortcode = "OTHER"
+
+        # Resolve outlet name for display in Sync page (d4).
+        # In this handler we don't have `outlet_id` locally, so map from restaurant restID.
+        outlet_id_for_bill = None
+        outlet_name_for_bill = None
+        try:
+            rest_id_local = str(restaurant_data.get('restID') or restaurant_data.get('res_id') or '')
+            if rest_id_local:
+                outlet_doc = await db.outlets.find_one(
+                    {"petpooja_rest_id": rest_id_local}, {"_id": 0, "id": 1, "name": 1}
+                )
+                if outlet_doc:
+                    outlet_id_for_bill = outlet_doc.get("id")
+                    outlet_name_for_bill = outlet_doc.get("name")
+        except Exception:
+            outlet_id_for_bill = None
+            outlet_name_for_bill = None
         
         # Store bill in petpooja_bills collection
         bill_doc = {
@@ -4779,9 +4953,13 @@ async def handle_petpooja_standard_format(request_data: Dict[str, Any]):
             "synced_to_order": False,
             "sync_error": None,
             "has_custom_cake": has_custom_cake,
+            "custom_cake_shortcode": custom_cake_shortcode,
+            "custom_cake_item_names": custom_cake_item_names,
             "custom_cake_details": custom_cake_details,
             "customer_name": customer_name,
             "customer_phone": customer_phone,
+            "outlet_id": outlet_id_for_bill,
+            "outlet_name": outlet_name_for_bill,
             "petpooja_status": order_data.get('status', ''),
             "order_type": order_type,
             "comment": comment,
@@ -5554,7 +5732,40 @@ async def record_payment(
     order = await db.orders.find_one({"id": payment_data.order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
+
+    # d2: Payment restriction — allow only when EITHER (a) the customer picks up at
+    # the same outlet the order was created at, OR (b) the order has been transferred
+    # to another outlet (transfer_to_outlet_id is set). This forces branches to
+    # explicitly transfer before collecting payment on someone else's order.
+    # Super Admin can bypass (audit trail is left in payment record).
+    if current_user.role != UserRole.SUPER_ADMIN:
+        is_pickup = bool(order.get('pickup_by_customer'))
+        transfer_to = order.get('transfer_to_outlet_id')
+        payer_outlet = current_user.outlet_id
+        origin_outlet = order.get('outlet_id')
+        if is_pickup:
+            # Pickup orders can be paid at the origin outlet only (no transfer needed).
+            if payer_outlet and origin_outlet and payer_outlet != origin_outlet and not transfer_to:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "Payment can be collected only at the origin outlet for pickup orders. "
+                        "If you need to accept payment here, transfer the order to this outlet first."
+                    ),
+                )
+        else:
+            # Delivery order — a non-origin outlet may collect payment only if the
+            # order was transferred to it.
+            if payer_outlet and origin_outlet and payer_outlet != origin_outlet:
+                if not transfer_to or transfer_to != payer_outlet:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "You cannot collect payment for an order that was not transferred to this outlet. "
+                            "Please transfer the order first."
+                        ),
+                    )
+
     # Get payment threshold for this outlet
     outlet_id = order.get('outlet_id')
     threshold_percentage = 20.0  # Default

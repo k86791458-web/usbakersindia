@@ -6,7 +6,7 @@ import {
   LayoutDashboard, ShoppingCart, Clock, Store, Users, MapPin, Settings, LogOut,
   Menu, X, MessageSquare, List, Receipt, Truck, CreditCard, RefreshCw, Navigation,
   TrendingUp, Webhook, Wallet, ImageIcon, Factory, Trash2, FileText, Activity,
-  ChevronDown, ChevronRight, Package, BarChart3, ShieldCheck
+  ChevronDown, ChevronRight, Package, BarChart3, ShieldCheck, Gift
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useLogoutConfirm } from './ConfirmDialog';
@@ -43,6 +43,7 @@ const Sidebar = ({ collapsed: collapsedProp, setCollapsed: setCollapsedProp }) =
             { path: '/hold-orders', label: 'Hold Orders', icon: Clock, testId: 'nav-hold-orders' },
             { path: '/pending-orders', label: 'Pending Orders', icon: Clock, testId: 'nav-pending-orders' },
             { path: '/credit-orders', label: 'Credit Orders', icon: CreditCard, testId: 'nav-credit-orders' },
+            { path: '/complementary-orders', label: 'Complementary', icon: Gift, testId: 'nav-complementary-orders' },
             { path: '/manage-orders', label: 'Manage Orders', icon: List, testId: 'nav-manage-orders' },
             { path: '/deleted-orders', label: 'Deleted Orders', icon: Trash2, testId: 'nav-deleted-orders' },
           ]

@@ -15,6 +15,7 @@ import MSG91Settings from './pages/MSG91Settings';
 import AiSensySettings from './pages/AiSensySettings';
 import ManageOrders from './pages/ManageOrders';
 import CreditOrders from './pages/CreditOrders';
+import ComplementaryOrders from './pages/ComplementaryOrders';
 import Payments from './pages/Payments';
 import KitchenDashboard from './pages/KitchenDashboard';
 import KitchenDashboardNew from './pages/KitchenDashboardNew';
@@ -106,6 +107,14 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'order_manager']}>
             <CreditOrders />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/complementary-orders"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'order_manager']}>
+            <ComplementaryOrders />
           </ProtectedRoute>
         }
       />
