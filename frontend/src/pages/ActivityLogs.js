@@ -28,14 +28,17 @@ const ActivityLogs = () => {
     user_id: '',
     action_type: '',
     outlet_id: '',
-    search: ''
+    search: '',
+    my_actions: false,   // e2
+    edits_only: false,   // e2
   });
 
   useEffect(() => {
     fetchLogs();
     fetchUsers();
     fetchOutlets();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.my_actions, filters.edits_only]);
 
   useEffect(() => {
     applyFilters();
@@ -44,7 +47,10 @@ const ActivityLogs = () => {
   const fetchLogs = async () => {
     setLoading(true);
     try {
-      const response = await axios.get(`${API}/activity-logs`);
+      const params = {};
+      if (filters.my_actions) params.my_actions = true;
+      if (filters.edits_only) params.edits_only = true;
+      const response = await axios.get(`${API}/activity-logs`, { params });
       setLogs(response.data);
     } catch (error) {
       console.error('Failed to fetch logs:', error);
@@ -297,6 +303,31 @@ const ActivityLogs = () => {
                   Clear Filters
                 </Button>
               </div>
+            </div>
+
+            {/* e2: Server-side toggles */}
+            <div className="flex flex-wrap gap-4 pt-4 mt-4 border-t">
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={filters.my_actions}
+                  onChange={(e) => setFilters({ ...filters, my_actions: e.target.checked })}
+                  data-testid="activity-my-actions-toggle"
+                />
+                <span>Show my actions only</span>
+              </label>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={filters.edits_only}
+                  onChange={(e) => setFilters({ ...filters, edits_only: e.target.checked })}
+                  data-testid="activity-edits-only-toggle"
+                />
+                <span>Show edit / update actions only</span>
+              </label>
+              <span className="text-xs text-gray-500 ml-auto">
+                Logs older than 30 days are automatically purged.
+              </span>
             </div>
           </CardContent>
         </Card>

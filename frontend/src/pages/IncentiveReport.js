@@ -17,6 +17,11 @@ const IncentiveReport = () => {
   const [incentiveData, setIncentiveData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [totalIncentive, setTotalIncentive] = useState(0);
+  // e5: Filters
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [personFilter, setPersonFilter] = useState('all');
+  const [minIncentive, setMinIncentive] = useState('');
 
   useEffect(() => {
     fetchSalesPersons();
@@ -26,7 +31,8 @@ const IncentiveReport = () => {
     if (salesPersons.length > 0) {
       fetchOrders();
     }
-  }, [salesPersons]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [salesPersons, dateFrom, dateTo, personFilter, minIncentive]);
 
   const fetchSalesPersons = async () => {
     const token = localStorage.getItem('token');
@@ -47,9 +53,17 @@ const IncentiveReport = () => {
       const response = await axios.get(`${API}/orders/manage`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      
+
+      // e5: Apply date + person filters
+      let filtered = response.data.filter((o) => {
+        if (dateFrom && (o.delivery_date || '') < dateFrom) return false;
+        if (dateTo && (o.delivery_date || '') > dateTo) return false;
+        if (personFilter !== 'all' && (o.order_taken_by || '') !== personFilter) return false;
+        return true;
+      });
+
       // Calculate incentives (1% per order)
-      const ordersWithIncentive = response.data.map(order => ({
+      const ordersWithIncentive = filtered.map(order => ({
         ...order,
         incentive_amount: order.total_amount * 0.01
       }));
@@ -58,7 +72,6 @@ const IncentiveReport = () => {
       const grouped = ordersWithIncentive.reduce((acc, order) => {
         const takenById = order.order_taken_by || 'Unknown';
         if (!acc[takenById]) {
-          // Find sales person name from ID
           const salesPerson = salesPersons.find(sp => sp.id === takenById);
           acc[takenById] = {
             id: takenById,
@@ -76,7 +89,9 @@ const IncentiveReport = () => {
         return acc;
       }, {});
 
-      const incentiveArray = Object.values(grouped);
+      // e5: Min-incentive filter
+      const minInc = Number(minIncentive) || 0;
+      const incentiveArray = Object.values(grouped).filter((p) => p.total_incentive >= minInc);
       setIncentiveData(incentiveArray);
       setOrders(ordersWithIncentive);
       
@@ -180,6 +195,42 @@ const IncentiveReport = () => {
             💡 Incentive is calculated at 1% of each order amount taken by the sales person.
           </AlertDescription>
         </Alert>
+
+        {/* e5: Filters */}
+        <Card>
+          <CardContent className="pt-6">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+              <div>
+                <label className="text-sm font-medium">From (Order date)</label>
+                <input type="date" className="w-full mt-1 border rounded p-2 text-sm"
+                       value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+                       data-testid="incentive-date-from" />
+              </div>
+              <div>
+                <label className="text-sm font-medium">To (Order date)</label>
+                <input type="date" className="w-full mt-1 border rounded p-2 text-sm"
+                       value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+                       data-testid="incentive-date-to" />
+              </div>
+              <div>
+                <label className="text-sm font-medium">Sales Person</label>
+                <select className="w-full mt-1 border rounded p-2 text-sm"
+                        value={personFilter} onChange={(e) => setPersonFilter(e.target.value)}
+                        data-testid="incentive-person-filter">
+                  <option value="all">All Sales Persons</option>
+                  {salesPersons.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-medium">Min Incentive (₹)</label>
+                <input type="number" min="0" className="w-full mt-1 border rounded p-2 text-sm"
+                       value={minIncentive} onChange={(e) => setMinIncentive(e.target.value)}
+                       placeholder="e.g. 100"
+                       data-testid="incentive-min" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Incentive Table */}
         <Card>

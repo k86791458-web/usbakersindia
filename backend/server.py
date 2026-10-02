@@ -379,7 +379,8 @@ class Zone(BaseModel):
     model_config = ConfigDict(extra="ignore")
     
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    outlet_id: str
+    outlet_id: str  # kept for backward compat — the "primary" outlet
+    outlet_ids: List[str] = Field(default_factory=list)  # e8: multi-outlet support
     name: str
     description: Optional[str] = None
     delivery_charge: float
@@ -387,7 +388,8 @@ class Zone(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class ZoneCreate(BaseModel):
-    outlet_id: str
+    outlet_id: Optional[str] = None
+    outlet_ids: Optional[List[str]] = None   # e8: preferred multi-outlet list
     name: str
     description: Optional[str] = None
     delivery_charge: float
@@ -2071,18 +2073,27 @@ async def create_zone(
     zone_data: ZoneCreate,
     current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
 ):
-    """Create a delivery zone (Super Admin only)"""
-    # Validate outlet exists
-    outlet = await db.outlets.find_one({"id": zone_data.outlet_id}, {"_id": 0})
-    if not outlet:
-        raise HTTPException(status_code=404, detail="Outlet not found")
+    """Create a delivery zone (Super Admin only). Supports multi-outlet via `outlet_ids`."""
+    # e8: Accept either legacy single outlet_id or new outlet_ids list
+    outlet_ids = list(zone_data.outlet_ids or [])
+    if zone_data.outlet_id and zone_data.outlet_id not in outlet_ids:
+        outlet_ids.append(zone_data.outlet_id)
+    if not outlet_ids:
+        raise HTTPException(status_code=400, detail="At least one outlet is required")
+
+    # Validate every outlet exists
+    found = await db.outlets.find({"id": {"$in": outlet_ids}}, {"_id": 0, "id": 1}).to_list(200)
+    if len(found) != len(outlet_ids):
+        raise HTTPException(status_code=404, detail="One or more outlets not found")
 
     # Group B: delivery charge must be 0 (complementary) or multiple of ₹50
     _validate_delivery_charge(zone_data.delivery_charge)
 
     zone = Zone(
-        outlet_id=zone_data.outlet_id,
+        outlet_id=outlet_ids[0],
+        outlet_ids=outlet_ids,
         name=zone_data.name,
+        description=zone_data.description,
         delivery_charge=zone_data.delivery_charge
     )
     
@@ -2095,13 +2106,19 @@ async def create_zone(
 
 @api_router.get("/zones")
 async def get_zones(outlet_id: Optional[str] = None, current_user: User = Depends(get_current_user)):
-    """Get all zones, optionally filtered by outlet"""
-    query = {} if not outlet_id else {"outlet_id": outlet_id}
+    """Get all zones, optionally filtered by outlet. e8: matches primary outlet OR any outlet in outlet_ids."""
+    if outlet_id:
+        query = {"$or": [{"outlet_id": outlet_id}, {"outlet_ids": outlet_id}]}
+    else:
+        query = {}
     zones = await db.zones.find(query, {"_id": 0}).to_list(1000)
     
+    # Backfill outlet_ids on old rows so the frontend always has the list
     for zone in zones:
         if isinstance(zone.get('created_at'), str):
             zone['created_at'] = datetime.fromisoformat(zone['created_at'])
+        if not zone.get('outlet_ids'):
+            zone['outlet_ids'] = [zone['outlet_id']] if zone.get('outlet_id') else []
     
     return zones
 
@@ -7189,12 +7206,18 @@ async def get_activity_logs(
     user_id: Optional[str] = None,
     action_type: Optional[str] = None,
     outlet_id: Optional[str] = None,
+    my_actions: bool = False,       # e2: current user only
+    edits_only: bool = False,        # e2: only show edit actions
     limit: int = 1000,
     current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
 ):
     """Get activity logs with filters (Super Admin only)"""
     
     query = {}
+
+    # e2: "my actions" — restrict to current user
+    if my_actions:
+        query["user_id"] = current_user.id
     
     if date_from:
         try:
@@ -7221,10 +7244,124 @@ async def get_activity_logs(
     
     if outlet_id:
         query['outlet_id'] = outlet_id
+
+    # e2: "edits only" — order edits / permission edits / user edits
+    if edits_only:
+        query['action_type'] = {"$in": [
+            "order_updated", "order_edited", "user_updated", "user_permission_updated",
+            "cake_photos_sent", "discount_applied", "order_transferred",
+        ]}
     
     logs = await db.activity_logs.find(query, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
     
     return logs
+
+
+@app.on_event("startup")
+async def purge_old_activity_logs_startup():
+    """e2: On boot, delete activity logs older than 30 days. Runs every startup."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        result = await db.activity_logs.delete_many({"timestamp": {"$lt": cutoff}})
+        if result.deleted_count:
+            logger.info(f"🧹 Purged {result.deleted_count} activity logs older than 30 days")
+    except Exception as e:
+        logger.error(f"activity log purge failed: {e}")
+
+
+# ==================== e6: LLM ANALYTICS Q&A ====================
+class AnalyticsChatRequest(BaseModel):
+    question: str
+
+@api_router.post("/analytics/chat")
+async def analytics_chat(
+    payload: AnalyticsChatRequest,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN])),
+):
+    """Ask a plain-English analytics question — receives a pre-computed
+    business summary as system prompt so the model can reason accurately."""
+    try:
+        from emergentintegrations.llm.chat import LlmChat, UserMessage
+    except Exception:
+        raise HTTPException(status_code=500, detail="LLM integration not installed")
+
+    key = os.environ.get("EMERGENT_LLM_KEY")
+    if not key:
+        raise HTTPException(status_code=500, detail="EMERGENT_LLM_KEY not set")
+
+    # Pre-compute a compact business snapshot the model can reference.
+    now = datetime.now(timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
+    yday_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    last7_iso = (now - timedelta(days=7)).isoformat()
+    last30_iso = (now - timedelta(days=30)).isoformat()
+
+    async def _stats(match):
+        cur = db.orders.aggregate([
+            {"$match": match},
+            {"$group": {
+                "_id": None,
+                "orders": {"$sum": 1},
+                "revenue": {"$sum": {"$ifNull": ["$total_amount", 0]}},
+                "paid": {"$sum": {"$ifNull": ["$paid_amount", 0]}},
+                "pending": {"$sum": {"$ifNull": ["$pending_amount", 0]}},
+            }},
+        ])
+        r = await cur.to_list(1)
+        return r[0] if r else {"orders": 0, "revenue": 0, "paid": 0, "pending": 0}
+
+    today_stats = await _stats({"delivery_date": today_str, "is_deleted": False})
+    yday_stats = await _stats({"delivery_date": yday_str, "is_deleted": False})
+    last7_stats = await _stats({"created_at": {"$gte": last7_iso}, "is_deleted": False})
+    last30_stats = await _stats({"created_at": {"$gte": last30_iso}, "is_deleted": False})
+
+    # Top flavours in last 30d
+    top_flavours = await db.orders.aggregate([
+        {"$match": {"created_at": {"$gte": last30_iso}, "is_deleted": False}},
+        {"$group": {"_id": "$flavour", "n": {"$sum": 1}}},
+        {"$sort": {"n": -1}},
+        {"$limit": 5},
+    ]).to_list(5)
+
+    # Outlet performance
+    outlet_perf = await db.orders.aggregate([
+        {"$match": {"created_at": {"$gte": last30_iso}, "is_deleted": False}},
+        {"$group": {"_id": "$outlet_id", "orders": {"$sum": 1}, "revenue": {"$sum": {"$ifNull": ["$total_amount", 0]}}}},
+        {"$sort": {"revenue": -1}},
+    ]).to_list(20)
+    outlet_map = {o['id']: o.get('name') async for o in db.outlets.find({}, {"_id": 0, "id": 1, "name": 1})}
+    outlet_lines = [
+        f"- {outlet_map.get(o['_id'], o['_id'])}: {o['orders']} orders, ₹{o['revenue']:.0f}"
+        for o in outlet_perf
+    ]
+
+    system_prompt = f"""You are an analytics assistant for US Bakers (a bakery CRM).
+Answer the user's question using ONLY the business data below. Be concise, use ₹ for money.
+If the answer requires data not in the snapshot, say so.
+
+=== SNAPSHOT (as of {now.strftime('%Y-%m-%d %H:%M UTC')}) ===
+Today ({today_str}): {today_stats['orders']} orders, revenue ₹{today_stats['revenue']:.0f}, paid ₹{today_stats['paid']:.0f}, pending ₹{today_stats['pending']:.0f}
+Yesterday ({yday_str}): {yday_stats['orders']} orders, revenue ₹{yday_stats['revenue']:.0f}
+Last 7 days: {last7_stats['orders']} orders, revenue ₹{last7_stats['revenue']:.0f}
+Last 30 days: {last30_stats['orders']} orders, revenue ₹{last30_stats['revenue']:.0f}
+
+Top flavours (30d): {', '.join(f"{f['_id']} ({f['n']})" for f in top_flavours) or 'none'}
+
+Outlet performance (30d):
+{chr(10).join(outlet_lines) or '(no data)'}
+"""
+
+    chat = LlmChat(
+        api_key=key,
+        session_id=f"analytics-{current_user.id}",
+        system_message=system_prompt,
+    ).with_model("anthropic", "claude-sonnet-4-6")
+
+    answer = await chat.send_message(UserMessage(text=payload.question))
+    return {"answer": answer, "snapshot": {
+        "today": today_stats, "yesterday": yday_stats,
+        "last_7d": last7_stats, "last_30d": last30_stats,
+    }}
 
 
 # Register the api router AFTER all routes are defined

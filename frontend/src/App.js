@@ -16,6 +16,7 @@ import AiSensySettings from './pages/AiSensySettings';
 import ManageOrders from './pages/ManageOrders';
 import CreditOrders from './pages/CreditOrders';
 import ComplementaryOrders from './pages/ComplementaryOrders';
+import AnalyticsChat from './pages/AnalyticsChat';
 import Payments from './pages/Payments';
 import KitchenDashboard from './pages/KitchenDashboard';
 import KitchenDashboardNew from './pages/KitchenDashboardNew';
@@ -115,6 +116,14 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute allowedRoles={['super_admin', 'outlet_admin', 'order_manager']}>
             <ComplementaryOrders />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/analytics-chat"
+        element={
+          <ProtectedRoute allowedRoles={['super_admin']}>
+            <AnalyticsChat />
           </ProtectedRoute>
         }
       />

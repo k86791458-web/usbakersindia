@@ -6,7 +6,7 @@ import {
   LayoutDashboard, ShoppingCart, Clock, Store, Users, MapPin, Settings, LogOut,
   Menu, X, MessageSquare, List, Receipt, Truck, CreditCard, RefreshCw, Navigation,
   TrendingUp, Webhook, Wallet, ImageIcon, Factory, Trash2, FileText, Activity,
-  ChevronDown, ChevronRight, Package, BarChart3, ShieldCheck, Gift
+  ChevronDown, ChevronRight, Package, BarChart3, ShieldCheck, Gift, Sparkles
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useLogoutConfirm } from './ConfirmDialog';
@@ -61,6 +61,7 @@ const Sidebar = ({ collapsed: collapsedProp, setCollapsed: setCollapsedProp }) =
           items: [
             { path: '/reports', label: 'All Reports', icon: Receipt, testId: 'nav-reports' },
             { path: '/incentive-report', label: 'Incentive Report', icon: TrendingUp, testId: 'nav-incentive' },
+            { path: '/analytics-chat', label: 'Ask Analytics', icon: Sparkles, testId: 'nav-analytics-chat' },
             { path: '/cake-image-report', label: 'Cake Image Report', icon: ImageIcon, testId: 'nav-cake-report' },
           ]
         },
