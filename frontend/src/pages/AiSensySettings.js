@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   MessageSquare, Save, AlertCircle, CheckCircle, Settings2,
-  Package, Clock, Truck, Star
+  Package, Clock, Truck, Star, PencilLine, Cake
 } from 'lucide-react';
 import axios from 'axios';
 
@@ -28,6 +28,14 @@ const PARAM_KEYS = [
   { key: 'outlet_name', label: 'Outlet Name' },
   { key: 'flavour', label: 'Flavour' },
   { key: 'occasion', label: 'Occasion' },
+  { key: 'size', label: 'Cake Size' },
+  { key: 'name_on_cake', label: 'Name on Cake' },
+  { key: 'delivery_type', label: 'Delivery (Yes/No)' },
+  { key: 'delivery_address', label: 'Delivery Address' },
+  { key: 'receiver_name', label: 'Receiver Name' },
+  { key: 'delivery_otp', label: 'Delivery OTP' },
+  { key: 'cake_image_url', label: 'Reference Cake Image URL' },
+  { key: 'actual_cake_image_url', label: 'Actual Cake Image URL' },
 ];
 
 const EVENT_CONFIG = {
@@ -55,6 +63,16 @@ const EVENT_CONFIG = {
     label: 'Delivered',
     icon: Star,
     description: 'Sent when the order is delivered to the customer'
+  },
+  order_updated: {
+    label: 'Order Updated',
+    icon: PencilLine,
+    description: 'Sent when order details are edited'
+  },
+  birthday: {
+    label: 'Customer Birthday',
+    icon: Cake,
+    description: 'Sent daily at 12:00 AM IST to customers whose birthday is today (only Customer Name applies)'
   }
 };
 

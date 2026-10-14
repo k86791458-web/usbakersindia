@@ -1,7 +1,7 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, UploadFile, File, Request, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -16,6 +16,9 @@ import logging
 import uuid
 import re
 import requests
+import asyncio
+import tempfile
+from storage import put_upload, get_upload, init_storage
 import random
 import secrets
 import base64
@@ -585,6 +588,7 @@ class WhatsAppTemplateEvent(str, Enum):
     DELIVERED = "delivered"
     ORDER_UPDATED = "order_updated"
     CAKE_PHOTOS_SENT = "cake_photos_sent"  # c6: manual send of reference + actual cake images
+    BIRTHDAY = "birthday"
 
 class WhatsAppTemplate(BaseModel):
     """Configuration for a WhatsApp template for a specific event"""
@@ -2300,18 +2304,24 @@ async def upload_image(
                 raise HTTPException(status_code=400, detail="HEIC support not available on server")
             try:
                 img = PILImage.open(BytesIO(contents)).convert('RGB')
+                buf = BytesIO()
+                img.save(buf, format='JPEG', quality=88)
+                contents = buf.getvalue()
                 unique_filename = f"{uuid.uuid4()}.jpg"
-                file_path = ROOT_DIR / "uploads" / unique_filename
-                img.save(file_path, format='JPEG', quality=88)
+                content_type = "image/jpeg"
             except Exception as e:
                 logger.error(f"HEIC convert failed: {e}")
                 raise HTTPException(status_code=400, detail="Failed to convert HEIC image")
         else:
-            file_extension = (file.filename or 'img').split('.')[-1]
+            file_extension = (file.filename or 'img').split('.')[-1].lower()
             unique_filename = f"{uuid.uuid4()}.{file_extension}"
-            file_path = ROOT_DIR / "uploads" / unique_filename
-            with open(file_path, 'wb') as f:
-                f.write(contents)
+            content_type = file.content_type or "image/jpeg"
+        await asyncio.to_thread(put_upload, unique_filename, contents, content_type)
+        await db.files.insert_one({
+            "id": str(uuid.uuid4()), "storage_path": unique_filename, "original_filename": file.filename,
+            "content_type": content_type, "size": len(contents), "is_deleted": False,
+            "uploaded_by": current_user.id, "created_at": datetime.now(timezone.utc).isoformat(),
+        })
 
         image_url = f"/api/uploads/{unique_filename}"
         # Return both keys for frontend compatibility (some callers use file_url)
@@ -4169,8 +4179,17 @@ async def export_factory_orders_pdf(
                     except Exception:
                         pass
                 elif cake_url and cake_url.startswith('/api/uploads/'):
-                    local_path = str(ROOT_DIR / cake_url.replace('/api/uploads/', 'uploads/'))
-                    if os.path.exists(local_path):
+                    rel = cake_url.replace('/api/uploads/', '')
+                    local_path = str(ROOT_DIR / 'uploads' / rel)
+                    if not os.path.exists(local_path):
+                        try:
+                            data, _ = await asyncio.to_thread(get_upload, rel)
+                            local_path = os.path.join(tempfile.gettempdir(), os.path.basename(rel))
+                            with open(local_path, 'wb') as tf:
+                                tf.write(data)
+                        except Exception:
+                            local_path = ''
+                    if local_path and os.path.exists(local_path):
                         from PIL import Image as PILImage
                         try:
                             pil_img = PILImage.open(local_path)
@@ -5573,10 +5592,7 @@ async def handle_petpooja_new_order(data: Dict[str, Any]):
                 {"customer_info.phone": customer_phone}
             ],
             "created_at": {"$gte": two_days_ago},
-            "$or": [
-                {"lifecycle_status": "pending_payment"},
-                {"lifecycle_status": "hold"}
-            ]
+            "lifecycle_status": {"$in": ["pending_payment", "hold"]}
         }, {"_id": 0}).to_list(10)
     
     if matching_orders:
@@ -6626,6 +6642,109 @@ def _normalize_phone_for_aisensy(phone: str) -> str:
     return p
 
 
+def _wa_date(d) -> str:
+    try:
+        return datetime.strptime(str(d)[:10], "%Y-%m-%d").strftime("%d-%m-%Y")
+    except (ValueError, TypeError):
+        return str(d or '-')
+
+
+def _wa_time(t) -> str:
+    try:
+        return datetime.strptime(str(t)[:5], "%H:%M").strftime("%I:%M %p")
+    except (ValueError, TypeError):
+        return str(t or '-')
+
+
+async def _aisensy_post_and_log(config: dict, template: dict, phone: str, name: str,
+                                params: List[str], event: str, order_id: Optional[str] = None) -> bool:
+    payload = {
+        "apiKey": config['api_key'],
+        "campaignName": template['campaign_name'],
+        "destination": _normalize_phone_for_aisensy(phone),
+        "userName": name or config.get('default_user_name') or "Customer",
+        "source": config.get('default_source') or "crm",
+        "templateParams": params,
+        "tags": template.get('tags') or [],
+        "attributes": {}
+    }
+    try:
+        response = await asyncio.to_thread(
+            requests.post, "https://backend.aisensy.com/campaign/t1/api/v2",
+            json=payload, headers={"Content-Type": "application/json"}, timeout=30)
+        ok = 200 <= response.status_code < 300
+    except Exception as http_err:
+        logger.error(f"AiSensy HTTP error ({event}): {http_err}")
+        response, ok = None, False
+    await db.whatsapp_logs.insert_one({
+        "id": str(uuid.uuid4()), "provider": "aisensy", "order_id": order_id, "event_type": event,
+        "recipient_phone": phone, "recipient_name": name, "campaign_name": template['campaign_name'],
+        "destination": payload["destination"], "template_params": params,
+        "status": "sent" if ok else "failed",
+        "response_code": response.status_code if response is not None else 0,
+        "response_message": (response.text[:1000] if response is not None else "no response"),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+    return ok
+
+
+async def send_birthday_wishes(today_mmdd: Optional[str] = None) -> dict:
+    config = await db.aisensy_config.find_one({}, {"_id": 0})
+    template = await db.aisensy_templates.find_one({"event_type": "birthday"}, {"_id": 0})
+    if not (config and config.get('is_active') and config.get('api_key')) or not (template and template.get('is_enabled')):
+        return {"sent": 0, "skipped": "birthday template not enabled"}
+    ist_today = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    mmdd = today_mmdd or ist_today.strftime("%m-%d")
+    year_key = ist_today.strftime("%Y")
+    pipeline = [
+        {"$match": {"is_deleted": {"$ne": True}, "customer_info.birthday": {"$regex": f"-{mmdd}$"}}},
+        {"$sort": {"created_at": -1}},
+        {"$group": {"_id": "$customer_info.phone", "name": {"$first": "$customer_info.name"}}},
+    ]
+    sent = failed = 0
+    async for c in db.orders.aggregate(pipeline):
+        phone = c["_id"]
+        if not phone:
+            continue
+        dedupe = {"phone": phone, "mmdd": mmdd, "year": year_key}
+        if await db.birthday_wishes_sent.find_one(dedupe):
+            continue
+        name = c.get("name") or "Customer"
+        params = [name if k == "customer_name" else "" for k in (template.get('template_params') or ["customer_name"])]
+        if await _aisensy_post_and_log(config, template, phone, name, params, "birthday"):
+            await db.birthday_wishes_sent.insert_one({**dedupe, "sent_at": datetime.now(timezone.utc).isoformat()})
+            sent += 1
+        else:
+            failed += 1
+    logger.info(f"Birthday wishes: sent={sent} failed={failed} for {mmdd}")
+    return {"sent": sent, "failed": failed, "date": mmdd}
+
+
+@api_router.post("/cron/birthday-wishes")
+async def cron_birthday_wishes(request: Request, background_tasks: BackgroundTasks):
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    secret = os.environ.get("WEBHOOK_CRON_SECRET") or ""
+    auth = request.headers.get("Authorization") or ""
+    if not secret or not auth.startswith("Bearer ") or not secrets.compare_digest(auth[7:], secret):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    run_id = request.headers.get("X-Webhook-Id")
+    if not run_id:
+        try:
+            run_id = (await request.json()).get("run_id")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid body")
+    if run_id and await db.cron_runs.find_one({"run_id": run_id}):
+        return {"accepted": True, "duplicate": True}
+    await db.cron_runs.insert_one({"run_id": run_id, "job": "birthday-wishes", "at": datetime.now(timezone.utc).isoformat()})
+    background_tasks.add_task(send_birthday_wishes)
+    return {"accepted": True}
+
+
+@api_router.post("/aisensy/birthday/run-now")
+async def run_birthday_now(current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))):
+    return await send_birthday_wishes()
+
+
 async def send_aisensy_whatsapp(order_id: str, event_type: WhatsAppTemplateEvent) -> bool:
     """Send a WhatsApp notification via AiSensy for an order event.
 
@@ -6658,7 +6777,6 @@ async def send_aisensy_whatsapp(order_id: str, event_type: WhatsAppTemplateEvent
             logger.warning(f"No phone number for order {order_id}; skipping AiSensy send")
             return False
 
-        destination = _normalize_phone_for_aisensy(customer_phone)
 
         # Resolve outlet name (optional in templates)
         outlet_name = ""
@@ -6667,72 +6785,44 @@ async def send_aisensy_whatsapp(order_id: str, event_type: WhatsAppTemplateEvent
             if outlet_doc:
                 outlet_name = outlet_doc.get('name', '')
 
-        # Build the value map used by template_params keys
+        public_base = (os.environ.get('PUBLIC_BASE_URL') or '').rstrip('/')
+
+        def _abs_url(u):
+            if not u:
+                return '-'
+            return u if u.startswith('http') else f"{public_base}{u}"
+
+        size = order.get('size_pounds')
+        receiver = order.get('receiver_info') or {}
         value_map = {
             "customer_name": customer_name,
             "order_number": str(order.get('order_number') or order_id),
-            "delivery_date": str(order.get('delivery_date') or 'N/A'),
-            "delivery_time": str(order.get('delivery_time') or 'N/A'),
+            "delivery_date": _wa_date(order.get('delivery_date')),
+            "delivery_time": _wa_time(order.get('delivery_time')),
             "total_amount": f"{float(order.get('total_amount') or 0):.2f}",
             "pending_amount": f"{float(order.get('pending_amount') or 0):.2f}",
             "paid_amount": f"{float(order.get('paid_amount') or 0):.2f}",
-            "outlet_name": outlet_name,
-            "flavour": str(order.get('flavour') or ''),
-            "occasion": str(order.get('occasion') or ''),
+            "outlet_name": outlet_name or '-',
+            "flavour": str(order.get('flavour') or '-'),
+            "occasion": str(order.get('occasion') or '-'),
+            "size": f"{size:g} Pound" if isinstance(size, (int, float)) else str(size or '-'),
+            "name_on_cake": str(order.get('name_on_cake') or '-'),
+            "delivery_type": "Yes" if order.get('needs_delivery') else "No (Pickup)",
+            "delivery_address": str(order.get('delivery_address') or '-'),
+            "receiver_name": str(receiver.get('name') or customer_name),
+            "delivery_otp": str(order.get('delivery_otp') or '-'),
+            "cake_image_url": _abs_url(order.get('cake_image_url')),
+            "actual_cake_image_url": _abs_url(order.get('actual_cake_image_url')),
         }
         param_keys: List[str] = template.get('template_params') or [
             "customer_name", "order_number", "delivery_date", "delivery_time"
         ]
         template_params = [value_map.get(k, "") for k in param_keys]
 
-        payload = {
-            "apiKey": config['api_key'],
-            "campaignName": template['campaign_name'],
-            "destination": destination,
-            "userName": config.get('default_user_name') or customer_name,
-            "source": config.get('default_source') or "crm",
-            "templateParams": template_params,
-            "tags": template.get('tags') or [],
-            "attributes": {}
-        }
-
-        try:
-            response = requests.post(
-                "https://backend.aisensy.com/campaign/t1/api/v2",
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=30
-            )
-            status_ok = 200 <= response.status_code < 300
-        except Exception as http_err:
-            logger.error(f"AiSensy HTTP error for order {order_id}: {http_err}")
-            status_ok = False
-            response = None
-
-        # Log attempt
-        log_doc = {
-            "id": str(uuid.uuid4()),
-            "provider": "aisensy",
-            "order_id": order_id,
-            "event_type": event_type.value,
-            "recipient_phone": customer_phone,
-            "recipient_name": customer_name,
-            "campaign_name": template['campaign_name'],
-            "destination": destination,
-            "template_params": template_params,
-            "status": "sent" if status_ok else "failed",
-            "response_code": response.status_code if response is not None else 0,
-            "response_message": (response.text[:1000] if response is not None else "no response"),
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        await db.whatsapp_logs.insert_one(log_doc)
-
-        if status_ok:
-            logger.info(f"AiSensy WhatsApp sent for order {order_id}, event: {event_type.value}")
-            return True
-        else:
-            logger.warning(f"AiSensy WhatsApp failed for order {order_id}: {log_doc['response_code']} - {log_doc['response_message']}")
-            return False
+        ok = await _aisensy_post_and_log(config, template, customer_phone, customer_name,
+                                         template_params, event_type.value, order_id)
+        logger.info(f"AiSensy WhatsApp {'sent' if ok else 'FAILED'} for order {order_id}, event: {event_type.value}")
+        return ok
     except Exception as e:
         logger.error(f"Error sending AiSensy WhatsApp for order {order_id}: {str(e)}")
         return False
@@ -6749,6 +6839,14 @@ async def send_whatsapp_notification(order_id: str, event_type: WhatsAppTemplate
     # Fallback to MSG91 (legacy)
     return await send_msg91_whatsapp(order_id, event_type)
 
+
+@app.on_event("startup")
+async def startup_init_storage():
+    try:
+        await asyncio.to_thread(init_storage)
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.error(f"Object storage init failed: {e}")
 
 
 # ==================== INITIALIZE SUPER ADMIN ====================
@@ -6972,19 +7070,17 @@ async def upload_voice_instruction(
 ):
     """Upload voice instruction audio file"""
     try:
-        # Create voice instructions directory
-        voice_dir = ROOT_DIR / "uploads" / "voice-instructions"
-        voice_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate unique filename
         file_ext = file.filename.split('.')[-1] if '.' in file.filename else 'webm'
         unique_filename = f"voice_{uuid.uuid4()}.{file_ext}"
-        file_path = voice_dir / unique_filename
-        
-        # Save file
-        with open(file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        content = await file.read()
+        rel_path = f"voice-instructions/{unique_filename}"
+        content_type = file.content_type or "audio/webm"
+        await asyncio.to_thread(put_upload, rel_path, content, content_type)
+        await db.files.insert_one({
+            "id": str(uuid.uuid4()), "storage_path": rel_path, "original_filename": file.filename,
+            "content_type": content_type, "size": len(content), "is_deleted": False,
+            "uploaded_by": current_user.id, "created_at": datetime.now(timezone.utc).isoformat(),
+        })
         
         # Return URL
         file_url = f"/api/uploads/voice-instructions/{unique_filename}"
@@ -7116,8 +7212,17 @@ async def delete_change_log(
 # Include the router in the main app
 # (Moved to bottom of file to register routes defined later, e.g. /activity-logs)
 
-# Serve uploaded images
-app.mount("/api/uploads", StaticFiles(directory=str(ROOT_DIR / "uploads")), name="uploads")
+@api_router.get("/uploads/{path:path}")
+async def serve_upload(path: str):
+    local = (ROOT_DIR / "uploads" / path).resolve()
+    if str(local).startswith(str((ROOT_DIR / "uploads").resolve())) and local.is_file():
+        return FileResponse(str(local))
+    record = await db.files.find_one({"storage_path": path, "is_deleted": False}, {"_id": 0})
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    data, ctype = await asyncio.to_thread(get_upload, path)
+    return Response(content=data, media_type=record.get("content_type") or ctype,
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 app.add_middleware(
     CORSMiddleware,
@@ -7223,7 +7328,7 @@ async def get_activity_logs(
         try:
             from_date = datetime.fromisoformat(date_from)
             query['timestamp'] = {"$gte": from_date.isoformat()}
-        except:
+        except ValueError:
             pass
     
     if date_to:
@@ -7233,7 +7338,7 @@ async def get_activity_logs(
                 query['timestamp']['$lte'] = to_date.isoformat()
             else:
                 query['timestamp'] = {"$lte": to_date.isoformat()}
-        except:
+        except ValueError:
             pass
     
     if user_id:

@@ -48,7 +48,7 @@ class NotificationManager:
             for queue in self.connections[user_id]:
                 try:
                     await queue.put(message)
-                except:
+                except Exception:
                     pass
     
     async def broadcast_to_role(self, role: str, event: str, data: dict):
@@ -66,12 +66,11 @@ class NotificationManager:
 notification_manager = NotificationManager()
 
 @notification_router.get("/stream")
-async def notification_stream(request: Request, current_user = Depends(get_current_user)):
+async def notification_stream(request: Request, user_id: str):
     """
     SSE endpoint for real-time notifications
     Client connects here to receive live updates
     """
-    user_id = current_user.id
     queue = await notification_manager.connect(user_id)
     
     async def event_generator():

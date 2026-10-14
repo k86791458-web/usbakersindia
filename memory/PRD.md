@@ -107,3 +107,11 @@ Pytest: `/app/backend/tests/test_batch_b.py` (6/6 pass). Testing report: `/app/t
    sudo systemctl restart usbakers-backend        # or supervisorctl restart backend
    cd frontend && yarn install && yarn build && sudo systemctl reload nginx
    ```
+
+## 2026-10-14 — AiSensy WhatsApp go-live + Object Storage
+- Uploads (cake images, voice) moved to Emergent Object Storage (`backend/storage.py`); `/api/uploads/{path}` serves local legacy files first, then object storage.
+- AiSensy key saved; 4 campaigns mapped: order_placed→crm_order_confirm (12 params), order_updated→crm_order_updated (7), delivered→crm_order_feedback (3), birthday→crm_birthday (1).
+- New param keys: size, name_on_cake, delivery_type, delivery_address, receiver_name, delivery_otp, cake_image_url, actual_cake_image_url (absolute via PUBLIC_BASE_URL). Dates dd-mm-yyyy, time 12h.
+- Birthday: daily cron `.emergent/crons.yml` 00:00 IST → POST /api/cron/birthday-wishes (WEBHOOK_CRON_SECRET), dedupe in `birthday_wishes_sent`; manual POST /api/aisensy/birthday/run-now (super admin).
+- Smoke test to 8968333413: all 4 triggers fire with correct params, but AiSensy returns "Campaign does not exist" → user must create API Campaigns (Live) in AiSensy with those exact names.
+- Pending: 3 bugs (user rights, edit/delete user, cake image report default date), Batch E e1/e3/e4/e7, testing agent for Batch E.
