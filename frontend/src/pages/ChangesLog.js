@@ -136,7 +136,7 @@ const ChangesLog = () => {
                             <Badge variant="outline" className={meta.cls}>{meta.label}</Badge>
                           </div>
                           <p className="text-sm text-gray-600 mt-1">{e.description}</p>
-                          <p className="text-xs text-gray-400 mt-1">{d.toLocaleDateString()} • {d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                          <p className="text-xs text-gray-400 mt-1">{d.toLocaleDateString()} • {d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}</p>
                         </div>
                         <Button variant="ghost" size="sm" onClick={() => remove(e.id)} className="text-red-500 hover:text-red-700" data-testid={`delete-change-log-${e.id}`}>
                           <Trash2 className="h-4 w-4" />

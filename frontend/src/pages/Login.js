@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ShieldCheck, KeyRound } from 'lucide-react';
+import { firstAllowedPath } from '../utils/pagePermissions';
 
 const Login = () => {
   const [step, setStep] = useState('credentials'); // 'credentials' | '2fa'
@@ -17,14 +18,11 @@ const Login = () => {
   const [pendingEmail, setPendingEmail] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [rememberDevice, setRememberDevice] = useState(true);
   const { login, verify2FA } = useAuth();
   const navigate = useNavigate();
 
-  const redirectByRole = (user) => {
-    if (user.role === 'kitchen') navigate('/kitchen');
-    else if (user.role === 'delivery') navigate('/delivery');
-    else navigate('/dashboard');
-  };
+  const redirectByRole = (user) => navigate(firstAllowedPath(user));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -52,7 +50,7 @@ const Login = () => {
     e.preventDefault();
     setError('');
     setLoading(true);
-    const result = await verify2FA(challengeToken, otp);
+    const result = await verify2FA(challengeToken, otp, rememberDevice);
     if (result.success) {
       if (result.used_backup_code) {
         // Inform but proceed
@@ -173,6 +171,17 @@ const Login = () => {
                   Lost access? Enter one of your 8-character backup codes instead.
                 </p>
               </div>
+
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={rememberDevice}
+                  onChange={(e) => setRememberDevice(e.target.checked)}
+                  className="h-4 w-4 accent-[#e92587]"
+                  data-testid="login-remember-device-checkbox"
+                />
+                Trust this device for 30 days
+              </label>
 
               <Button
                 type="submit"

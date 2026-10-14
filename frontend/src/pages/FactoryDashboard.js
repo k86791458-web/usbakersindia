@@ -11,6 +11,7 @@ import {
   Truck, Clock, ChefHat, CheckCircle
 } from 'lucide-react';
 import axios from 'axios';
+import { formatTime12 } from '../utils/formatters';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -247,7 +248,7 @@ const FactoryDashboard = () => {
                       <tr key={order.id} className="border-b hover:bg-gray-50" data-testid={`factory-order-row-${order.order_number}`}>
                         <td className="p-3">
                           <span className="font-bold">#{order.order_number}</span>
-                          <div className="text-xs text-gray-400">{order.delivery_time}</div>
+                          <div className="text-xs text-gray-400">{formatTime12(order.delivery_time)}</div>
                         </td>
                         <td className="p-3">
                           <span className="text-xs bg-gray-100 px-2 py-1 rounded">{order.outlet_name || 'N/A'}</span>

@@ -12,6 +12,11 @@ import { ImageIcon, CheckCircle, Calendar, User, Search, Phone, Hash, X } from '
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
+const todayLocal = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
 const CakeImageReport = () => {
   const [orders, setOrders] = useState([]);
   const [filteredOrders, setFilteredOrders] = useState([]);
@@ -23,8 +28,8 @@ const CakeImageReport = () => {
     order_id: '',
     customer_name: '',
     phone: '',
-    date_from: '',
-    date_to: '',
+    date_from: todayLocal(),
+    date_to: todayLocal(),
     outlet_id: 'all',
     sales_person_id: 'all'
   });

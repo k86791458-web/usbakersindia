@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { CheckCircle, Clock, Filter, Download, Mic } from 'lucide-react';
+import { formatTime12 } from '../utils/formatters';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -178,7 +179,7 @@ const KitchenDashboard = () => {
         <hr/>
         <p><strong>Order #:</strong> ${order.order_number}</p>
         <p><strong>Delivery Date:</strong> ${order.delivery_date}</p>
-        <p><strong>Delivery Time:</strong> ${order.delivery_time}</p>
+        <p><strong>Delivery Time:</strong> ${formatTime12(order.delivery_time)}</p>
         <hr/>
         <h3>Order Details:</h3>
         <p><strong>Flavour:</strong> ${order.flavour}</p>
@@ -277,7 +278,7 @@ const KitchenDashboard = () => {
               <TableCell>
                 <div className="text-sm">
                   <div>{new Date(order.delivery_date).toLocaleDateString()}</div>
-                  <div className="text-gray-500">{order.delivery_time}</div>
+                  <div className="text-gray-500">{formatTime12(order.delivery_time)}</div>
                 </div>
               </TableCell>
               <TableCell>{order.flavour}</TableCell>

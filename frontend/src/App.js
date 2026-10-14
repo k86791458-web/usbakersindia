@@ -29,6 +29,8 @@ import PetPoojaSync from './pages/PetPoojaSync';
 import NavigatePage from './pages/Navigate';
 import IncentiveReport from './pages/IncentiveReport';
 import CakeImageReport from './pages/CakeImageReport';
+import DeliveryReport from './pages/DeliveryReport';
+import { firstAllowedPath } from './utils/pagePermissions';
 import FactoryDashboard from './pages/FactoryDashboard';
 import DeletedOrders from './pages/DeletedOrders';
 import ChangesLog from './pages/ChangesLog';
@@ -49,13 +51,7 @@ const AppRoutes = () => {
   }
 
   // Get default route based on user role
-  const getDefaultRoute = () => {
-    if (!user) return '/login';
-    if (user.role === 'kitchen') return '/kitchen';
-    if (user.role === 'delivery') return '/delivery';
-    if (user.role === 'factory_manager') return '/factory';
-    return '/dashboard';
-  };
+  const getDefaultRoute = () => (user ? firstAllowedPath(user) : '/login');
 
   return (
     <Routes>
@@ -277,6 +273,14 @@ const AppRoutes = () => {
         element={
           <ProtectedRoute allowedRoles={['super_admin']}>
             <NavigatePage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/delivery-report"
+        element={
+          <ProtectedRoute>
+            <DeliveryReport />
           </ProtectedRoute>
         }
       />

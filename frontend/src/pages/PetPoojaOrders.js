@@ -21,6 +21,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import axios from 'axios';
+import { formatTime12 } from '../utils/formatters';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -274,7 +275,7 @@ const PetPoojaOrders = () => {
                           )}
                         </TableCell>
                         <TableCell className="text-sm">
-                          {new Date(order.created_at).toLocaleString()}
+                          {new Date(order.created_at).toLocaleString('en-IN', { hour12: true })}
                         </TableCell>
                         <TableCell className="text-right">
                           <Button
@@ -333,7 +334,7 @@ const PetPoojaOrders = () => {
                   </div>
                   <div>
                     <Label>Delivery Time</Label>
-                    <div className="font-medium mt-1">{selectedOrder.delivery_time}</div>
+                    <div className="font-medium mt-1">{formatTime12(selectedOrder.delivery_time)}</div>
                   </div>
                   <div>
                     <Label>PetPooja Status</Label>

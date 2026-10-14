@@ -266,7 +266,7 @@ const KitchenDashboardNew = () => {
     return `${hh}:${mm}:${ss}`;
   };
 
-  const nowClock = new Date(tick).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const nowClock = new Date(tick).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
 
   const getTimeSlotForOrder = (order) => {
     const t = order.delivery_time || '';
@@ -324,7 +324,7 @@ const KitchenDashboardNew = () => {
       <div style={{ padding: 12, fontFamily: 'Arial, sans-serif', color: '#111', background: '#fff', minHeight: '100vh' }} data-testid="kitchen-pos-mode">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <h1 style={{ margin: 0, fontSize: 22 }}>US BAKERS — Kitchen Orders ({fetchDate})</h1>
-          <div style={{ fontSize: 14 }}>{new Date().toLocaleTimeString()}</div>
+          <div style={{ fontSize: 14 }}>{new Date().toLocaleTimeString('en-IN', { hour12: true })}</div>
         </div>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
           <thead>

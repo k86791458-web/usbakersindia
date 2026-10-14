@@ -21,6 +21,7 @@ import tempfile
 from storage import put_upload, get_upload, init_storage
 import random
 import secrets
+import hashlib
 import base64
 import pyotp
 import qrcode
@@ -258,8 +259,92 @@ AVAILABLE_PERMISSIONS = {
         "can_assign_delivery": "Assign delivery partners",
         "can_view_delivery_orders": "View delivery orders",
         "can_mark_delivered": "Mark orders as delivered"
+    },
+    "pages": {
+        "page_dashboard": "Dashboard",
+        "page_new_order": "New Order",
+        "page_hold_orders": "Hold Orders",
+        "page_pending_orders": "Pending Orders",
+        "page_credit_orders": "Credit Orders",
+        "page_complementary_orders": "Complementary Orders",
+        "page_manage_orders": "Manage Orders",
+        "page_deleted_orders": "Deleted Orders",
+        "page_payments": "Payments",
+        "page_customers": "Customers",
+        "page_reports": "Reports",
+        "page_incentive_report": "Incentive Report",
+        "page_delivery_report": "Delivery Person Report",
+        "page_analytics_chat": "Ask Analytics",
+        "page_cake_image_report": "Cake Image Report",
+        "page_kitchen": "Kitchen Dashboard",
+        "page_factory": "Factory Dashboard",
+        "page_delivery": "Delivery Dashboard",
+        "page_outlets": "Outlets",
+        "page_users": "Users",
+        "page_sales_persons": "Sales Persons",
+        "page_zones": "Zones",
+        "page_permissions": "Permissions",
+        "page_petpooja_sync": "PetPooja Sync",
+        "page_petpooja_settings": "PetPooja Settings",
+        "page_whatsapp_settings": "WhatsApp Settings",
+        "page_navigate": "Navigate",
+        "page_changes_log": "Changes Log",
+        "page_activity_logs": "Activity Logs",
+        "page_settings": "Settings"
     }
 }
+
+_ORDER_PAGES = ["page_dashboard", "page_new_order", "page_hold_orders", "page_pending_orders",
+                "page_credit_orders", "page_complementary_orders", "page_manage_orders",
+                "page_deleted_orders", "page_payments", "page_customers", "page_reports"]
+ROLE_DEFAULT_PAGES = {
+    "super_admin": list(AVAILABLE_PERMISSIONS["pages"].keys()),
+    "outlet_admin": _ORDER_PAGES + ["page_cake_image_report", "page_delivery_report"],
+    "order_manager": list(_ORDER_PAGES),
+    "factory_manager": ["page_factory", "page_kitchen", "page_new_order", "page_reports"],
+    "kitchen": ["page_kitchen", "page_reports"],
+    "delivery": ["page_delivery"],
+    "accounts": ["page_payments", "page_reports"],
+}
+
+# Route template (without /api) -> permissions that grant access in addition to the role list.
+_ROUTE_PERM_RULES = [
+    (None, r"^/(users|impersonate)(/|$)", ["page_users", "can_manage_users"]),
+    (None, r"^/sales-persons", ["page_sales_persons", "can_manage_users"]),
+    (None, r"^/(system-settings|flavours|occasions|time-slots|branch-payment-threshold)", ["page_settings", "can_manage_settings"]),
+    (None, r"^/outlets", ["page_outlets", "can_manage_outlets"]),
+    (None, r"^/(zones|cities)", ["page_zones", "can_manage_zones"]),
+    (None, r"^/orders/(credit|credit-pending|\{order_id\}/(mark-credit|release-credit))$", ["page_credit_orders"]),
+    (None, r"^/orders/(complementary|\{order_id\}/mark-complementary)$", ["page_complementary_orders"]),
+    (None, r"^/orders/\{order_id\}/apply-discount$", ["can_edit_total_amount"]),
+    (None, r"^/orders/\{order_id\}/(clear-bill-resync-flag|set-pickup|add-delivery|ready-to-deliver|transfer|transfer-outlet)$", ["can_edit_orders"]),
+    ("POST", r"^/orders$", ["can_create_order", "page_new_order"]),
+    (None, r"^/orders/\{order_id\}/release$", ["page_hold_orders", "can_edit_orders"]),
+    ("DELETE", r"^/orders/\{order_id\}$", ["can_delete_orders"]),
+    ("PATCH", r"^/orders/\{order_id\}$", ["can_edit_orders"]),
+    (None, r"^/orders/(deleted|delete-requests|\{order_id\}/(approve-delete|reject-delete))$", ["page_deleted_orders"]),
+    (None, r"^/(orders/download-pdf|factory/)", ["page_factory", "page_kitchen"]),
+    (None, r"^/orders/\{order_id\}/(mark-ready|upload-actual-photo|pause-preparing)$", ["can_mark_ready", "page_kitchen"]),
+    (None, r"^/delivery/(available-orders|accept-order|my-orders|verify-otp)", ["page_delivery", "can_mark_delivered", "can_view_delivery_orders"]),
+    (None, r"^/delivery/(assign-order|persons)", ["can_assign_delivery"]),
+    (None, r"^/customers/import$", ["page_customers"]),
+    (None, r"^/petpooja/webhook-url$", ["page_petpooja_settings"]),
+    (None, r"^/dashboard/", ["page_dashboard"]),
+    (None, r"^/(whatsapp|msg91|aisensy)/", ["page_whatsapp_settings"]),
+    (None, r"^/permissions/", ["page_permissions"]),
+    (None, r"^/change-log", ["page_changes_log"]),
+    (None, r"^/activity-logs$", ["page_activity_logs"]),
+    (None, r"^/analytics/chat$", ["page_analytics_chat"]),
+    (None, r"^/reports/delivery-persons$", ["page_delivery_report"]),
+]
+
+
+def route_granting_permissions(method: str, route_path: str) -> List[str]:
+    path = route_path[4:] if route_path.startswith("/api") else route_path
+    for m, pattern, perms in _ROUTE_PERM_RULES:
+        if (m is None or m == method) and re.search(pattern, path):
+            return perms
+    return []
 
 # ==================== MODELS ====================
 
@@ -298,6 +383,17 @@ class UserCreate(BaseModel):
     outlet_scope: str = "specific"  # 'all' | 'multiple' | 'specific'
     outlet_ids: List[str] = []
 
+class UserUpdate(BaseModel):
+    email: Optional[EmailStr] = None
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    role: Optional[UserRole] = None
+    incentive_percentage: Optional[float] = None
+    outlet_id: Optional[str] = None
+    outlet_scope: Optional[str] = None
+    outlet_ids: Optional[List[str]] = None
+    reset_permissions_to_role: bool = False
+
 class UserResponse(BaseModel):
     id: str
     email: str
@@ -316,6 +412,7 @@ class UserResponse(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+    device_token: Optional[str] = None
 
 class Token(BaseModel):
     access_token: str
@@ -325,6 +422,8 @@ class Token(BaseModel):
 class TwoFactorLoginRequest(BaseModel):
     challenge_token: str
     code: str  # 6-digit TOTP code or 8-char backup code
+    remember_device: bool = False
+    device_name: Optional[str] = None
 
 class TwoFactorVerifyRequest(BaseModel):
     code: str
@@ -774,8 +873,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 
 def require_role(allowed_roles: List[UserRole]):
     """Legacy role-based access control - kept for backward compatibility"""
-    async def role_checker(current_user: User = Depends(get_current_user)):
+    async def role_checker(request: Request, current_user: User = Depends(get_current_user)):
         if current_user.role not in allowed_roles:
+            route = request.scope.get("route")
+            granting = route_granting_permissions(request.method, getattr(route, "path", request.url.path))
+            if granting and set(granting) & set(current_user.permissions or []):
+                return current_user
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied. Required roles: {[r.value for r in allowed_roles]}"
@@ -830,7 +933,18 @@ async def login(login_data: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     
     # If 2FA enabled, issue a short-lived challenge token instead of full access token
-    if user.is_two_factor_enabled and user.two_factor_secret:
+    trusted = False
+    if user.is_two_factor_enabled and user.two_factor_secret and login_data.device_token:
+        dev = await db.trusted_devices.find_one({
+            "user_id": user.id,
+            "token_hash": hashlib.sha256(login_data.device_token.encode()).hexdigest(),
+            "revoked": False,
+            "expires_at": {"$gt": datetime.now(timezone.utc).isoformat()},
+        })
+        if dev:
+            trusted = True
+            await db.trusted_devices.update_one({"id": dev["id"]}, {"$set": {"last_used_at": datetime.now(timezone.utc).isoformat()}})
+    if user.is_two_factor_enabled and user.two_factor_secret and not trusted:
         challenge_token = create_access_token(
             data={"sub": user.id, "purpose": "2fa_challenge"},
             expires_delta=timedelta(minutes=5)
@@ -921,6 +1035,18 @@ async def login_verify_2fa(payload: TwoFactorLoginRequest):
             {"$pull": {"two_factor_backup_codes": used_backup}}
         )
     
+    device_token = None
+    if payload.remember_device:
+        device_token = secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)
+        await db.trusted_devices.insert_one({
+            "id": str(uuid.uuid4()), "user_id": user.id, "user_name": user.name, "user_email": user.email,
+            "device_name": (payload.device_name or "Unknown device")[:200],
+            "token_hash": hashlib.sha256(device_token.encode()).hexdigest(),
+            "created_at": now.isoformat(), "last_used_at": now.isoformat(),
+            "expires_at": (now + timedelta(days=30)).isoformat(), "revoked": False,
+        })
+
     access_token = create_access_token(data={"sub": user.id, "role": user.role.value})
     user_response = UserResponse(
         id=user.id, email=user.email, name=user.name, phone=user.phone,
@@ -945,6 +1071,7 @@ async def login_verify_2fa(payload: TwoFactorLoginRequest):
         "token_type": "bearer",
         "user": user_response.model_dump(mode='json'),
         "used_backup_code": bool(used_backup),
+        "device_token": device_token,
         "remaining_backup_codes": len(user.two_factor_backup_codes) - (1 if used_backup else 0)
     }
 
@@ -1095,7 +1222,7 @@ async def outlet_login(login_data: LoginRequest):
         name=outlet_doc['name'],
         phone=outlet_doc['phone'],
         role=UserRole.OUTLET_ADMIN,
-        permissions=["can_create_order", "can_view_orders", "can_edit_orders", "can_record_payment"],
+        permissions=["can_create_order", "can_view_orders", "can_edit_orders", "can_record_payment"] + ROLE_DEFAULT_PAGES["outlet_admin"],
         incentive_percentage=0.0,
         outlet_id=outlet_doc['id'],
         is_active=True,
@@ -1156,6 +1283,7 @@ async def create_user(
         else:
             # Use default permissions for the role
             permissions = get_default_role_permissions(user_data.role.value)
+    permissions = with_default_pages(user_data.role.value, permissions)
     
     # Create user
     user = User(
@@ -1424,6 +1552,43 @@ async def reset_user_password(
         "message": "Password reset successfully",
         "user_id": user_id
     }
+
+@api_router.put("/users/{user_id}", response_model=UserResponse)
+async def update_user(
+    user_id: str,
+    data: UserUpdate,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))
+):
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    upd = data.model_dump(exclude_unset=True, exclude={"reset_permissions_to_role"})
+    if "email" in upd and upd["email"] != user["email"]:
+        if await db.users.find_one({"email": upd["email"], "id": {"$ne": user_id}}):
+            raise HTTPException(status_code=400, detail="Another user already uses this email")
+    if "role" in upd:
+        upd["role"] = upd["role"].value
+        if user_id == current_user.id and upd["role"] != UserRole.SUPER_ADMIN.value:
+            raise HTTPException(status_code=400, detail="You cannot remove your own super admin role")
+    scope = upd.get("outlet_scope", user.get("outlet_scope", "specific"))
+    if scope == "specific" and upd.get("outlet_id"):
+        if not await db.outlets.find_one({"id": upd["outlet_id"]}):
+            raise HTTPException(status_code=404, detail="Outlet not found")
+    if scope != "specific":
+        upd["outlet_id"] = None
+    if scope != "multiple":
+        upd["outlet_ids"] = []
+    if data.reset_permissions_to_role:
+        role_val = upd.get("role", user["role"])
+        tpl = await db.role_permissions.find_one({"role": role_val}, {"_id": 0})
+        perms = tpl.get("permissions", []) if tpl else get_default_role_permissions(role_val)
+        upd["permissions"] = with_default_pages(role_val, perms)
+    if upd:
+        await db.users.update_one({"id": user_id}, {"$set": upd})
+    doc = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    if isinstance(doc.get('created_at'), str):
+        doc['created_at'] = datetime.fromisoformat(doc['created_at'])
+    return UserResponse(**doc)
 
 @api_router.delete("/users/{user_id}")
 async def delete_user(
@@ -3123,7 +3288,7 @@ async def download_orders_pdf(
             cake_details = f"{flavour}<br/>{size} lbs<br/>{occasion}"
             
             delivery_date = order.get('delivery_date', 'N/A')
-            delivery_time = order.get('delivery_time', 'N/A')
+            delivery_time = _wa_time(order.get('delivery_time'))
             delivery_info = f"{delivery_date}<br/>{delivery_time}"
             
             amount = f"₹{order.get('total_amount', 0):.2f}"
@@ -3608,6 +3773,8 @@ async def update_order_status(
     if actual_status == OrderStatus.READY:
         update_data['is_ready'] = True
         update_data['ready_at'] = datetime.now(timezone.utc).isoformat()
+    if actual_status == OrderStatus.DELIVERED and not order.get('delivered_at'):
+        update_data['delivered_at'] = datetime.now(timezone.utc).isoformat()
     
     # Handle is_ready from body
     if body and body.is_ready is not None:
@@ -4140,7 +4307,7 @@ async def export_factory_orders_pdf(
                     ['Outlet:', str(outlet_map.get(order.get('outlet_id'), 'N/A'))],
                     ['Occasion:', str(order.get('occasion') or 'N/A')],
                     ['Name on Cake:', str(order.get('name_on_cake') or 'N/A')],
-                    ['Delivery:', f"{'Yes' if order.get('needs_delivery') else 'No'} | {order.get('delivery_date') or ''} {order.get('delivery_time') or ''}"],
+                    ['Delivery:', f"{'Yes' if order.get('needs_delivery') else 'No'} | {order.get('delivery_date') or ''} {_wa_time(order.get('delivery_time')) if order.get('delivery_time') else ''}"],
                     ['Status:', (order.get('status') or 'pending').replace('_', ' ').title()],
                     ['Amount:', f"Rs.{order.get('total_amount') or 0:.2f} (Paid: Rs.{order.get('paid_amount') or 0:.2f})"],
                 ]
@@ -6425,7 +6592,7 @@ async def send_msg91_whatsapp(
             "body_1": customer_name,
             "body_2": order.get('order_number', order_id),
             "body_3": order.get('delivery_date', 'N/A'),
-            "body_4": order.get('delivery_time', 'N/A')
+            "body_4": _wa_time(order.get('delivery_time'))
         }
         
         # Build components based on template variables
@@ -6960,7 +7127,25 @@ def get_default_role_permissions(role: str) -> List[str]:
             "can_refund", "can_view_reports"
         ]
     }
-    return defaults.get(role, [])
+    return defaults.get(role, []) + ROLE_DEFAULT_PAGES.get(role, [])
+
+
+def with_default_pages(role: str, permissions: List[str]) -> List[str]:
+    if any(p.startswith("page_") for p in permissions or []):
+        return permissions
+    return list(permissions or []) + ROLE_DEFAULT_PAGES.get(role, [])
+
+
+@app.on_event("startup")
+async def migrate_page_permissions():
+    async for u in db.users.find({}, {"_id": 0, "id": 1, "role": 1, "permissions": 1}):
+        perms = u.get("permissions") or []
+        if not any(p.startswith("page_") for p in perms):
+            await db.users.update_one({"id": u["id"]}, {"$set": {"permissions": with_default_pages(u.get("role"), perms)}})
+    async for t in db.role_permissions.find({}, {"_id": 0}):
+        perms = t.get("permissions") or []
+        if not any(p.startswith("page_") for p in perms):
+            await db.role_permissions.update_one({"role": t["role"]}, {"$set": {"permissions": with_default_pages(t["role"], perms)}})
 
 @api_router.get("/permissions/available")
 async def get_available_permissions(current_user: User = Depends(require_role([UserRole.SUPER_ADMIN]))):
@@ -7470,4 +7655,96 @@ Outlet performance (30d):
 
 
 # Register the api router AFTER all routes are defined
+# ==================== TRUSTED DEVICES (2FA) ====================
+
+@api_router.get("/auth/trusted-devices")
+async def list_trusted_devices(all_users: bool = False, current_user: User = Depends(get_current_user)):
+    q = {"revoked": False, "expires_at": {"$gt": datetime.now(timezone.utc).isoformat()}}
+    if not (all_users and current_user.role == UserRole.SUPER_ADMIN):
+        q["user_id"] = current_user.id
+    return await db.trusted_devices.find(q, {"_id": 0, "token_hash": 0}).sort("last_used_at", -1).to_list(5000)
+
+
+@api_router.delete("/auth/trusted-devices/{device_id}")
+async def revoke_trusted_device(device_id: str, current_user: User = Depends(get_current_user)):
+    q = {"id": device_id}
+    if current_user.role != UserRole.SUPER_ADMIN:
+        q["user_id"] = current_user.id
+    res = await db.trusted_devices.update_one(q, {"$set": {"revoked": True}})
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return {"message": "Device removed"}
+
+
+# ==================== DELIVERY PERSON REPORT ====================
+
+def _ist_deadline(d_date, d_time):
+    t = str(d_time or '').split(' - ')[0].strip()
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %I:%M %p"):
+        try:
+            return datetime.strptime(f"{d_date} {t}", fmt).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        except ValueError:
+            continue
+    return None
+
+
+@api_router.get("/reports/delivery-persons")
+async def delivery_person_report(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    outlet_id: Optional[str] = None,
+    current_user: User = Depends(require_role([UserRole.SUPER_ADMIN, UserRole.OUTLET_ADMIN]))
+):
+    q = {"is_deleted": {"$ne": True}, "assigned_delivery_partner": {"$nin": [None, ""]}}
+    if date_from or date_to:
+        q["delivery_date"] = {}
+        if date_from:
+            q["delivery_date"]["$gte"] = date_from
+        if date_to:
+            q["delivery_date"]["$lte"] = date_to
+    if current_user.role != UserRole.SUPER_ADMIN and current_user.outlet_id:
+        q["outlet_id"] = current_user.outlet_id
+    elif outlet_id and outlet_id != "all":
+        q["outlet_id"] = outlet_id
+    orders = await db.orders.find(q, {"_id": 0}).sort("delivery_date", -1).to_list(20000)
+    persons = {u["id"]: u for u in await db.users.find({"role": "delivery"}, {"_id": 0, "id": 1, "name": 1, "phone": 1}).to_list(5000)}
+    rows: Dict[str, Dict[str, Any]] = {}
+    for o in orders:
+        pid = o["assigned_delivery_partner"]
+        p = persons.get(pid, {})
+        r = rows.setdefault(pid, {
+            "delivery_person_id": pid, "name": p.get("name") or o.get("assigned_delivery_partner_name") or "Unknown",
+            "phone": p.get("phone") or o.get("assigned_delivery_partner_phone") or "",
+            "assigned": 0, "delivered": 0, "pending": 0, "on_time": 0, "late": 0,
+            "cash_to_collect": 0.0, "orders": [],
+        })
+        r["assigned"] += 1
+        pending_amt = float(o.get("pending_amount") or 0)
+        delivered = o.get("status") == "delivered" or bool(o.get("delivered_at"))
+        on_time = None
+        if delivered:
+            r["delivered"] += 1
+            deadline = _ist_deadline(o.get("delivery_date"), o.get("delivery_time"))
+            d_at = o.get("delivered_at")
+            if deadline and d_at:
+                d_at_dt = datetime.fromisoformat(d_at) if isinstance(d_at, str) else d_at
+                if d_at_dt.tzinfo is None:
+                    d_at_dt = d_at_dt.replace(tzinfo=timezone.utc)
+                on_time = d_at_dt <= deadline + timedelta(minutes=15)
+                r["on_time" if on_time else "late"] += 1
+        else:
+            r["pending"] += 1
+        r["cash_to_collect"] += pending_amt
+        r["orders"].append({
+            "id": o["id"], "order_number": o.get("order_number"), "customer_name": (o.get("customer_info") or {}).get("name"),
+            "delivery_date": o.get("delivery_date"), "delivery_time": o.get("delivery_time"),
+            "delivered_at": o.get("delivered_at") if isinstance(o.get("delivered_at"), str) else (o["delivered_at"].isoformat() if o.get("delivered_at") else None),
+            "status": o.get("status"), "pending_amount": pending_amt, "total_amount": float(o.get("total_amount") or 0),
+            "on_time": on_time, "delivery_address": o.get("delivery_address"),
+        })
+    result = sorted(rows.values(), key=lambda r: -r["delivered"])
+    totals = {k: sum(r[k] for r in result) for k in ["assigned", "delivered", "pending", "on_time", "late", "cash_to_collect"]}
+    return {"persons": result, "totals": totals}
+
+
 app.include_router(api_router)

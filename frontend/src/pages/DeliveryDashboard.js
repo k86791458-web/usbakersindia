@@ -10,6 +10,7 @@ import {
   CheckCircle, LogOut, Navigation, RefreshCw, DollarSign, CreditCard, KeyRound
 } from 'lucide-react';
 import axios from 'axios';
+import { formatTime12 } from '../utils/formatters';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -137,7 +138,7 @@ const DeliveryDashboard = () => {
             </div>
             <span className="text-sm text-gray-500">
               <Clock className="h-3 w-3 inline mr-1" />
-              {order.delivery_time}
+              {formatTime12(order.delivery_time)}
             </span>
           </div>
 

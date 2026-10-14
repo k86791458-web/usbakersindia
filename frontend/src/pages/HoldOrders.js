@@ -14,7 +14,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { DollarSign, Trash2, Eye, Edit, Send, Download } from 'lucide-react';
 import DeleteOrderDialog from '../components/DeleteOrderDialog';
 import { exportRowsToExcel, fmtDateTime } from '../utils/excelExport';
-import { formatBirthday } from '../utils/formatters';
+import { formatBirthday, formatTime12 } from '../utils/formatters';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -325,7 +325,7 @@ const HoldOrders = () => {
                       <TableCell>{getOutletName(order.outlet_id)}</TableCell>
                       <TableCell>{order.flavour}</TableCell>
                       <TableCell>{order.size_pounds} lbs</TableCell>
-                      <TableCell>{order.delivery_date} {order.delivery_time}</TableCell>
+                      <TableCell>{order.delivery_date} {formatTime12(order.delivery_time)}</TableCell>
                       <TableCell>
                         <span className="font-bold" style={{ color: '#e92587' }}>
                           ₹{order.total_amount.toFixed(2)}
@@ -637,7 +637,7 @@ const HoldOrders = () => {
                     <div>
                       <Label>Delivery Time Slot *</Label>
                       <Select
-                        value={editFormData.delivery_time}
+                        value={formatTime12(editFormData.delivery_time)}
                         onValueChange={(value) => setEditFormData({ ...editFormData, delivery_time: value })}
                       >
                         <SelectTrigger>

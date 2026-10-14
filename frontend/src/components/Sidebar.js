@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useLogoutConfirm } from './ConfirmDialog';
+import { canAccessPath } from '../utils/pagePermissions';
 
 const STORAGE_KEY = 'usb_sidebar_open_groups';
 
@@ -23,8 +24,6 @@ const Sidebar = ({ collapsed: collapsedProp, setCollapsed: setCollapsedProp }) =
 
   const { showConfirm, LogoutConfirmDialog } = useLogoutConfirm(logout);
 
-  const isSuperAdmin = user?.role === 'super_admin';
-  const role = user?.role;
 
   const isActive = (path) => location.pathname === path;
 
@@ -32,119 +31,75 @@ const Sidebar = ({ collapsed: collapsedProp, setCollapsed: setCollapsedProp }) =
   // Each entry is either:
   //   { type: 'item', path, label, icon, testId }
   //   { type: 'group', key, label, icon, testId, items: [ {path,label,icon,testId}, ... ] }
-  const buildMenu = () => {
-    if (isSuperAdmin) {
-      return [
-        { type: 'item', path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, testId: 'nav-dashboard' },
-        {
-          type: 'group', key: 'orders', label: 'Orders', icon: ShoppingCart, testId: 'nav-group-orders',
-          items: [
-            { path: '/new-order', label: 'New Order', icon: ShoppingCart, testId: 'nav-new-order' },
-            { path: '/hold-orders', label: 'Hold Orders', icon: Clock, testId: 'nav-hold-orders' },
-            { path: '/pending-orders', label: 'Pending Orders', icon: Clock, testId: 'nav-pending-orders' },
-            { path: '/credit-orders', label: 'Credit Orders', icon: CreditCard, testId: 'nav-credit-orders' },
-            { path: '/complementary-orders', label: 'Complementary', icon: Gift, testId: 'nav-complementary-orders' },
-            { path: '/manage-orders', label: 'Manage Orders', icon: List, testId: 'nav-manage-orders' },
-            { path: '/deleted-orders', label: 'Deleted Orders', icon: Trash2, testId: 'nav-deleted-orders' },
-          ]
-        },
-        {
-          type: 'group', key: 'payments', label: 'Payments', icon: Wallet, testId: 'nav-group-payments',
-          items: [
-            { path: '/payments', label: 'All Payments', icon: Wallet, testId: 'nav-payments' },
-            { path: '/payments?tab=pending', label: 'Pending Payments', icon: Clock, testId: 'nav-pending-payments' },
-          ]
-        },
-        { type: 'item', path: '/customers', label: 'Customers', icon: Users, testId: 'nav-customers' },
-        {
-          type: 'group', key: 'reports', label: 'Reports', icon: BarChart3, testId: 'nav-group-reports',
-          items: [
-            { path: '/reports', label: 'All Reports', icon: Receipt, testId: 'nav-reports' },
-            { path: '/incentive-report', label: 'Incentive Report', icon: TrendingUp, testId: 'nav-incentive' },
-            { path: '/analytics-chat', label: 'Ask Analytics', icon: Sparkles, testId: 'nav-analytics-chat' },
-            { path: '/cake-image-report', label: 'Cake Image Report', icon: ImageIcon, testId: 'nav-cake-report' },
-          ]
-        },
-        {
-          type: 'group', key: 'management', label: 'Management', icon: Package, testId: 'nav-group-management',
-          items: [
-            { path: '/outlets', label: 'Outlets', icon: Store, testId: 'nav-outlets' },
-            { path: '/users', label: 'Users', icon: Users, testId: 'nav-users' },
-            { path: '/sales-persons', label: 'Sales Persons', icon: Users, testId: 'nav-sales-persons' },
-            { path: '/zones', label: 'Zones', icon: MapPin, testId: 'nav-zones' },
-            { path: '/permissions', label: 'Permissions', icon: ShieldCheck, testId: 'nav-permissions' },
-          ]
-        },
-        {
-          type: 'group', key: 'integrations', label: 'Integrations', icon: Webhook, testId: 'nav-group-integrations',
-          items: [
-            { path: '/petpooja-sync', label: 'PetPooja Sync', icon: RefreshCw, testId: 'nav-petpooja-sync' },
-            { path: '/petpooja-settings', label: 'PetPooja Settings', icon: Webhook, testId: 'nav-petpooja-settings' },
-            { path: '/aisensy-settings', label: 'AiSensy WhatsApp', icon: MessageSquare, testId: 'nav-aisensy-settings' },
-            { path: '/navigate', label: 'Navigate', icon: Navigation, testId: 'nav-navigate' },
-          ]
-        },
-        {
-          type: 'group', key: 'system', label: 'System', icon: Settings, testId: 'nav-group-system',
-          items: [
-            { path: '/changes-log', label: 'Changes Log', icon: FileText, testId: 'nav-changes-log' },
-            { path: '/activity-logs', label: 'Activity Logs', icon: Activity, testId: 'nav-activity-logs' },
-            { path: '/settings', label: 'Settings', icon: Settings, testId: 'nav-settings' },
-          ]
-        },
-      ];
-    }
+  const FULL_MENU = [
+    { type: 'item', path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, testId: 'nav-dashboard' },
+    { type: 'item', path: '/kitchen', label: 'Kitchen Orders', icon: ShoppingCart, testId: 'nav-kitchen' },
+    { type: 'item', path: '/factory', label: 'Factory Dashboard', icon: Factory, testId: 'nav-factory' },
+    { type: 'item', path: '/delivery', label: 'Delivery Orders', icon: Truck, testId: 'nav-delivery' },
+    {
+      type: 'group', key: 'orders', label: 'Orders', icon: ShoppingCart, testId: 'nav-group-orders',
+      items: [
+        { path: '/new-order', label: 'New Order', icon: ShoppingCart, testId: 'nav-new-order' },
+        { path: '/hold-orders', label: 'Hold Orders', icon: Clock, testId: 'nav-hold-orders' },
+        { path: '/pending-orders', label: 'Pending Orders', icon: Clock, testId: 'nav-pending-orders' },
+        { path: '/credit-orders', label: 'Credit Orders', icon: CreditCard, testId: 'nav-credit-orders' },
+        { path: '/complementary-orders', label: 'Complementary', icon: Gift, testId: 'nav-complementary-orders' },
+        { path: '/manage-orders', label: 'Manage Orders', icon: List, testId: 'nav-manage-orders' },
+        { path: '/deleted-orders', label: 'Deleted Orders', icon: Trash2, testId: 'nav-deleted-orders' },
+      ]
+    },
+    {
+      type: 'group', key: 'payments', label: 'Payments', icon: Wallet, testId: 'nav-group-payments',
+      items: [
+        { path: '/payments', label: 'All Payments', icon: Wallet, testId: 'nav-payments' },
+        { path: '/payments?tab=pending', label: 'Pending Payments', icon: Clock, testId: 'nav-pending-payments' },
+      ]
+    },
+    { type: 'item', path: '/customers', label: 'Customers', icon: Users, testId: 'nav-customers' },
+    {
+      type: 'group', key: 'reports', label: 'Reports', icon: BarChart3, testId: 'nav-group-reports',
+      items: [
+        { path: '/reports', label: 'All Reports', icon: Receipt, testId: 'nav-reports' },
+        { path: '/incentive-report', label: 'Incentive Report', icon: TrendingUp, testId: 'nav-incentive' },
+        { path: '/delivery-report', label: 'Delivery Person Report', icon: Truck, testId: 'nav-delivery-report' },
+        { path: '/analytics-chat', label: 'Ask Analytics', icon: Sparkles, testId: 'nav-analytics-chat' },
+        { path: '/cake-image-report', label: 'Cake Image Report', icon: ImageIcon, testId: 'nav-cake-report' },
+      ]
+    },
+    {
+      type: 'group', key: 'management', label: 'Management', icon: Package, testId: 'nav-group-management',
+      items: [
+        { path: '/outlets', label: 'Outlets', icon: Store, testId: 'nav-outlets' },
+        { path: '/users', label: 'Users', icon: Users, testId: 'nav-users' },
+        { path: '/sales-persons', label: 'Sales Persons', icon: Users, testId: 'nav-sales-persons' },
+        { path: '/zones', label: 'Zones', icon: MapPin, testId: 'nav-zones' },
+        { path: '/permissions', label: 'Permissions', icon: ShieldCheck, testId: 'nav-permissions' },
+      ]
+    },
+    {
+      type: 'group', key: 'integrations', label: 'Integrations', icon: Webhook, testId: 'nav-group-integrations',
+      items: [
+        { path: '/petpooja-sync', label: 'PetPooja Sync', icon: RefreshCw, testId: 'nav-petpooja-sync' },
+        { path: '/petpooja-settings', label: 'PetPooja Settings', icon: Webhook, testId: 'nav-petpooja-settings' },
+        { path: '/aisensy-settings', label: 'AiSensy WhatsApp', icon: MessageSquare, testId: 'nav-aisensy-settings' },
+        { path: '/navigate', label: 'Navigate', icon: Navigation, testId: 'nav-navigate' },
+      ]
+    },
+    {
+      type: 'group', key: 'system', label: 'System', icon: Settings, testId: 'nav-group-system',
+      items: [
+        { path: '/changes-log', label: 'Changes Log', icon: FileText, testId: 'nav-changes-log' },
+        { path: '/activity-logs', label: 'Activity Logs', icon: Activity, testId: 'nav-activity-logs' },
+        { path: '/settings', label: 'Settings', icon: Settings, testId: 'nav-settings' },
+      ]
+    },
+  ];
 
-    if (role === 'kitchen') {
-      return [
-        { type: 'item', path: '/kitchen', label: 'Kitchen Orders', icon: ShoppingCart, testId: 'nav-kitchen' },
-        { type: 'item', path: '/reports', label: 'Reports', icon: Receipt, testId: 'nav-reports' },
-      ];
-    }
-    if (role === 'delivery') {
-      return [
-        { type: 'item', path: '/delivery', label: 'Delivery Orders', icon: Truck, testId: 'nav-delivery' },
-      ];
-    }
-    if (role === 'factory_manager') {
-      return [
-        { type: 'item', path: '/factory', label: 'Factory Dashboard', icon: Factory, testId: 'nav-factory' },
-        { type: 'item', path: '/kitchen', label: 'Kitchen View', icon: ShoppingCart, testId: 'nav-kitchen' },
-        {
-          type: 'group', key: 'orders', label: 'Orders', icon: ShoppingCart, testId: 'nav-group-orders',
-          items: [
-            { path: '/new-order', label: 'New Order', icon: ShoppingCart, testId: 'nav-new-order' },
-          ]
-        },
-        { type: 'item', path: '/reports', label: 'Reports', icon: Receipt, testId: 'nav-reports' },
-      ];
-    }
-
-    // Outlet Admin / others
-    return [
-      { type: 'item', path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, testId: 'nav-dashboard' },
-      {
-        type: 'group', key: 'orders', label: 'Orders', icon: ShoppingCart, testId: 'nav-group-orders',
-        items: [
-          { path: '/new-order', label: 'New Order', icon: ShoppingCart, testId: 'nav-new-order' },
-          { path: '/hold-orders', label: 'Hold Orders', icon: Clock, testId: 'nav-hold-orders' },
-          { path: '/pending-orders', label: 'Pending Orders', icon: Clock, testId: 'nav-pending-orders' },
-          { path: '/credit-orders', label: 'Credit Orders', icon: CreditCard, testId: 'nav-credit-orders' },
-          { path: '/manage-orders', label: 'Manage Orders', icon: List, testId: 'nav-manage-orders' },
-          { path: '/deleted-orders', label: 'Deleted Orders', icon: Trash2, testId: 'nav-deleted-orders' },
-        ]
-      },
-      {
-        type: 'group', key: 'payments', label: 'Payments', icon: Wallet, testId: 'nav-group-payments',
-        items: [
-          { path: '/payments', label: 'All Payments', icon: Wallet, testId: 'nav-payments' },
-          { path: '/payments?tab=pending', label: 'Pending Payments', icon: Clock, testId: 'nav-pending-payments' },
-        ]
-      },
-      { type: 'item', path: '/customers', label: 'Customers', icon: Users, testId: 'nav-customers' },
-      { type: 'item', path: '/reports', label: 'Reports', icon: Receipt, testId: 'nav-reports' },
-    ];
-  };
+  const buildMenu = () => FULL_MENU
+    .map(node => node.type === 'group'
+      ? { ...node, items: node.items.filter(i => canAccessPath(user, i.path)) }
+      : node)
+    .filter(node => node.type === 'group' ? node.items.length > 0 : canAccessPath(user, node.path));
 
   const menu = buildMenu();
 

@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Gift, RefreshCw, Loader2, Download } from 'lucide-react';
 import { exportRowsToExcel, fmtDateTime } from '../utils/excelExport';
-import { formatBirthday } from '../utils/formatters';
+import { formatBirthday, formatTime12 } from '../utils/formatters';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -122,7 +122,7 @@ const ComplementaryOrders = () => {
                       </TableCell>
                       <TableCell className="text-sm">
                         {o.delivery_date}
-                        <div className="text-xs text-gray-500">{o.delivery_time}</div>
+                        <div className="text-xs text-gray-500">{formatTime12(o.delivery_time)}</div>
                       </TableCell>
                       <TableCell>₹{(o.total_amount || 0).toFixed(2)}</TableCell>
                       <TableCell className="text-xs text-gray-500">

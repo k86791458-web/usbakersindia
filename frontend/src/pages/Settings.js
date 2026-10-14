@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Settings as SettingsIcon, Plus, Trash2, Save, Loader2, Clock, AlertTriangle, ShieldCheck, ShieldOff, KeyRound, Copy, Download, RefreshCw } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { useAuth } from '../contexts/AuthContext';
+import { TrustedDevicesCard } from '../components/TrustedDevicesCard';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -1001,6 +1002,8 @@ const Settings = () => {
             </CardContent>
           </Card>
         )}
+
+        {isSuperAdmin && <TrustedDevicesCard />}
 
         {/* SECTION 7: Reset System (Danger Zone) */}
         <Card className="border-red-200">

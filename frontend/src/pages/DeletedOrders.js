@@ -9,7 +9,7 @@ import { Trash2, RefreshCw, Loader2, CheckCircle, XCircle, ShieldAlert, Download
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useAuth } from '../contexts/AuthContext';
 import { exportRowsToExcel, fmtDateTime } from '../utils/excelExport';
-import { formatBirthday } from '../utils/formatters';
+import { formatBirthday, formatTime12 } from '../utils/formatters';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -190,7 +190,7 @@ const DeletedOrders = () => {
                           </TableCell>
                           <TableCell>
                             <div className="text-sm">{order.delivery_date || '-'}</div>
-                            <div className="text-xs text-gray-500">{order.delivery_time || ''}</div>
+                            <div className="text-xs text-gray-500">{formatTime12(order.delivery_time)}</div>
                           </TableCell>
                           <TableCell>₹{order.total_amount?.toFixed(2) || '0.00'}</TableCell>
                           <TableCell>

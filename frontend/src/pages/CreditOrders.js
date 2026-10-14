@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { CreditCard, Gift, DollarSign, Package, Download } from 'lucide-react';
 import { exportRowsToExcel, fmtDateTime } from '../utils/excelExport';
-import { formatBirthday } from '../utils/formatters';
+import { formatBirthday, formatTime12 } from '../utils/formatters';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -185,7 +185,7 @@ const CreditOrders = () => {
                       </TableCell>
                       <TableCell>
                         <div className="text-sm">{order.delivery_date}</div>
-                        <div className="text-xs text-gray-500">{order.delivery_time}</div>
+                        <div className="text-xs text-gray-500">{formatTime12(order.delivery_time)}</div>
                       </TableCell>
                       <TableCell>
                         <div className="font-bold">Rs.{order.total_amount?.toFixed(2)}</div>

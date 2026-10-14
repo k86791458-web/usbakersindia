@@ -12,7 +12,9 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { UserPlus, CheckCircle, XCircle } from 'lucide-react';
+import { UserPlus, CheckCircle, XCircle, Pencil, Trash2 } from 'lucide-react';
+import { EditUserDialog, ROLE_OPTIONS } from '../components/EditUserDialog';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -30,6 +32,8 @@ const UserManagementNew = () => {
   const [editPermissions, setEditPermissions] = useState([]);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [editUser, setEditUser] = useState(null);
+  const [deleteUser, setDeleteUser] = useState(null);
 
   const [formData, setFormData] = useState({
     email: '',
@@ -159,6 +163,19 @@ const UserManagementNew = () => {
       fetchUsers();
     } catch (error) {
       console.error('Failed to toggle user status:', error);
+    }
+  };
+
+  const confirmDeleteUser = async () => {
+    const u = deleteUser;
+    setDeleteUser(null);
+    setError('');
+    try {
+      await axios.delete(`${API}/users/${u.id}`);
+      setSuccess(`${u.name} deleted`);
+      fetchUsers();
+    } catch (e) {
+      setError(e.response?.data?.detail || 'Failed to delete user');
     }
   };
 
@@ -322,12 +339,7 @@ const UserManagementNew = () => {
                             <SelectValue placeholder="Select role" />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="super_admin">Super Admin</SelectItem>
-                            <SelectItem value="outlet_admin">Outlet Admin</SelectItem>
-                            <SelectItem value="order_manager">Order Manager</SelectItem>
-                            <SelectItem value="kitchen">Kitchen Staff</SelectItem>
-                            <SelectItem value="delivery">Delivery Staff</SelectItem>
-                            <SelectItem value="accounts">Accounts</SelectItem>
+                            {ROLE_OPTIONS.map(r => <SelectItem key={r.v} value={r.v}>{r.label}</SelectItem>)}
                           </SelectContent>
                         </Select>
                       </div>
@@ -502,7 +514,12 @@ const UserManagementNew = () => {
 
         {success && (
           <Alert>
-            <AlertDescription>{success}</AlertDescription>
+            <AlertDescription data-testid="user-mgmt-success">{success}</AlertDescription>
+          </Alert>
+        )}
+        {error && !dialogOpen && (
+          <Alert variant="destructive">
+            <AlertDescription data-testid="user-mgmt-error">{error}</AlertDescription>
           </Alert>
         )}
 
@@ -518,6 +535,7 @@ const UserManagementNew = () => {
                   <TableHead>Name</TableHead>
                   <TableHead>Email</TableHead>
                   <TableHead>Phone</TableHead>
+                  <TableHead>Role</TableHead>
                   <TableHead>Outlet</TableHead>
                   <TableHead>Permissions</TableHead>
                   <TableHead>Status</TableHead>
@@ -532,7 +550,8 @@ const UserManagementNew = () => {
                       <TableCell className="font-medium">{user.name}</TableCell>
                       <TableCell>{user.email}</TableCell>
                       <TableCell>{user.phone}</TableCell>
-                      <TableCell>{outlet?.name || '-'}</TableCell>
+                      <TableCell>{ROLE_OPTIONS.find(r => r.v === user.role)?.label || user.role}</TableCell>
+                      <TableCell>{user.outlet_scope === 'all' ? 'All outlets' : user.outlet_scope === 'multiple' ? `${(user.outlet_ids || []).length} outlets` : (outlet?.name || '-')}</TableCell>
                       <TableCell>
                         <Badge variant="outline">
                           {Array.isArray(user.permissions) ? user.permissions.length : 0} permissions
@@ -552,7 +571,10 @@ const UserManagementNew = () => {
                         )}
                       </TableCell>
                       <TableCell>
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 flex-wrap">
+                          <Button size="sm" variant="outline" onClick={() => setEditUser(user)} data-testid={`edit-user-${user.id}`}>
+                            <Pencil className="h-3 w-3 mr-1" />Edit
+                          </Button>
                           <Button
                             size="sm"
                             variant="outline"
@@ -577,6 +599,9 @@ const UserManagementNew = () => {
                           >
                             Reset Password
                           </Button>
+                          <Button size="sm" variant="outline" className="text-red-600 border-red-200 hover:bg-red-50" onClick={() => setDeleteUser(user)} data-testid={`delete-user-${user.id}`}>
+                            <Trash2 className="h-3 w-3 mr-1" />Delete
+                          </Button>
                         </div>
                       </TableCell>
                     </TableRow>
@@ -585,6 +610,23 @@ const UserManagementNew = () => {
             </Table>
           </CardContent>
         </Card>
+
+        <EditUserDialog
+          user={editUser}
+          outlets={outlets}
+          open={!!editUser}
+          onOpenChange={(o) => { if (!o) setEditUser(null); }}
+          onSaved={(msg) => { setSuccess(msg); fetchUsers(); }}
+        />
+        <ConfirmDialog
+          isOpen={!!deleteUser}
+          onClose={() => setDeleteUser(null)}
+          onConfirm={confirmDeleteUser}
+          title="Delete user?"
+          description={deleteUser ? `This permanently deletes ${deleteUser.name} (${deleteUser.email}). This cannot be undone.` : ''}
+          confirmText="Delete"
+          variant="destructive"
+        />
 
         {/* Permissions Dialog */}
         {selectedUser && (
@@ -600,7 +642,7 @@ const UserManagementNew = () => {
                 {Object.entries(availablePermissions).map(([category, perms]) => (
                   <Card key={category}>
                     <CardHeader className="py-3">
-                      <CardTitle className="text-sm capitalize">{category.replace('_', ' ')}</CardTitle>
+                      <CardTitle className="text-sm capitalize">{category === 'pages' ? 'Page access (menus the user can open)' : category.replace('_', ' ')}</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-2 pt-0">
                       {Object.entries(perms).map(([key, description]) => (

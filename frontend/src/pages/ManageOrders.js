@@ -38,6 +38,7 @@ import { Mic, BadgePercent, Send } from 'lucide-react';
 import axios from 'axios';
 import * as XLSX from 'xlsx';
 import ImageEditor from '../components/ImageEditor';
+import { formatTime12 } from '../utils/formatters';
 
 const API_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -952,7 +953,7 @@ const ManageOrders = () => {
         <td>${order.customer_info?.name || 'N/A'}<br/><small>${order.customer_info?.phone || ''}</small></td>
         <td>${order.flavour || 'N/A'}</td>
         <td>${order.size_pounds || '-'} lbs</td>
-        <td>${order.delivery_date || ''}<br/><small>${order.delivery_time || ''}</small></td>
+        <td>${order.delivery_date || ''}<br/><small>${formatTime12(order.delivery_time)}</small></td>
         <td>${order.occasion || 'N/A'}</td>
         <td>${order.status?.replace(/_/g, ' ').toUpperCase() || ''}</td>
         <td>₹${order.total_amount?.toFixed(2) || '0'}</td>
@@ -1001,7 +1002,7 @@ const ManageOrders = () => {
         </thead>
         <tbody>${rows}</tbody>
       </table>
-      <p style="text-align:center; color:#999; margin-top:20px;">Generated on ${new Date().toLocaleString()}</p>
+      <p style="text-align:center; color:#999; margin-top:20px;">Generated on ${new Date().toLocaleString('en-IN', { hour12: true })}</p>
     </body>
     </html>`;
     
@@ -1845,7 +1846,7 @@ const ManageOrders = () => {
                                 <Calendar className="h-3 w-3" />
                                 <span>{order.delivery_date}</span>
                               </div>
-                              <div className="text-sm text-gray-500">{order.delivery_time}</div>
+                              <div className="text-sm text-gray-500">{formatTime12(order.delivery_time)}</div>
                               {order.created_at && (
                                 <div className="text-[11px] text-gray-400 mt-1" data-testid={`booking-date-${order.id}`}>
                                   Booked: {new Date(order.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
@@ -2170,7 +2171,7 @@ const ManageOrders = () => {
                   </div>
                   <div>
                     <Label>Delivery Time</Label>
-                    <div className="font-medium mt-1">{selectedOrder.delivery_time}</div>
+                    <div className="font-medium mt-1">{formatTime12(selectedOrder.delivery_time)}</div>
                   </div>
                   <div>
                     <Label>Flavour</Label>
@@ -2421,7 +2422,7 @@ const ManageOrders = () => {
                   <div>
                     <Label>Delivery Time * <span className="text-xs text-gray-500 font-normal">(30-min slots)</span></Label>
                     <Select
-                      value={editFormData.delivery_time || ''}
+                      value={formatTime12(editFormData.delivery_time)}
                       onValueChange={(value) => setEditFormData({...editFormData, delivery_time: value})}
                     >
                       <SelectTrigger data-testid="edit-delivery-time">

@@ -8,7 +8,7 @@ import { Clock, DollarSign, User, MapPin, CreditCard, Trash2, Download } from 'l
 import { useAuth } from '../contexts/AuthContext';
 import DeleteOrderDialog from '../components/DeleteOrderDialog';
 import { exportRowsToExcel, fmtDateTime } from '../utils/excelExport';
-import { formatBirthday } from '../utils/formatters';
+import { formatBirthday, formatTime12 } from '../utils/formatters';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -267,7 +267,7 @@ const PendingOrders = () => {
                     <div className="flex items-center gap-2 text-sm text-gray-600">
                       <Clock className="h-4 w-4" />
                       <span>
-                        {order.delivery_date} at {order.delivery_time}
+                        {order.delivery_date} at {formatTime12(order.delivery_time)}
                       </span>
                     </div>
 

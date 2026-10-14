@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { formatTime12 } from './formatters';
 
 /**
  * Export any list of rows (array of objects) to an Excel .xlsx download.
@@ -25,6 +26,7 @@ export const exportRowsToExcel = (rows, headers, filename = 'export', sheetName 
         if (h.fmt) return h.fmt(raw, row);
         if (raw === null || raw === undefined) return '';
         if (typeof raw === 'boolean') return raw ? 'Yes' : 'No';
+        if (/time/i.test(h.key) && typeof raw === 'string' && /^\d{1,2}:\d{2}(:\d{2})?$/.test(raw)) return formatTime12(raw);
         if (Array.isArray(raw)) return raw.join(', ');
         return raw;
       })

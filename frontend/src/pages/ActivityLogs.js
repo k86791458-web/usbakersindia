@@ -172,7 +172,7 @@ const ActivityLogs = () => {
     const csv = [
       ['Timestamp', 'User', 'Action', 'Description', 'Outlet', 'IP Address'].join(','),
       ...filteredLogs.map(log => [
-        new Date(log.timestamp).toLocaleString(),
+        new Date(log.timestamp).toLocaleString('en-IN', { hour12: true }),
         log.user_name || 'System',
         log.action_type,
         log.description?.replace(/,/g, ';') || '',
@@ -363,7 +363,7 @@ const ActivityLogs = () => {
                         <TableCell className="whitespace-nowrap">
                           <div className="flex items-center gap-2">
                             <Calendar className="h-4 w-4 text-gray-400" />
-                            {new Date(log.timestamp).toLocaleString()}
+                            {new Date(log.timestamp).toLocaleString('en-IN', { hour12: true })}
                           </div>
                         </TableCell>
                         <TableCell>
