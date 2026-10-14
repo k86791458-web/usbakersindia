@@ -227,7 +227,7 @@ const Sidebar = ({ collapsed: collapsedProp, setCollapsed: setCollapsedProp }) =
             <div className="flex items-center space-x-2">
               <img src="/us-bakers-logo.jpg" alt="US Bakers" className="h-10 w-10 object-contain" />
               <div>
-                <h1 className="text-sm font-bold" style={{ color: '#e92587' }}>US Bakers</h1>
+                <p className="font-bold leading-tight" style={{ color: '#e92587', fontSize: '14px' }} data-testid="sidebar-brand">US Bakers</p>
                 <p className="text-xs text-gray-500">Bakery CRM</p>
               </div>
             </div>

@@ -115,3 +115,14 @@ Pytest: `/app/backend/tests/test_batch_b.py` (6/6 pass). Testing report: `/app/t
 - Birthday: daily cron `.emergent/crons.yml` 00:00 IST → POST /api/cron/birthday-wishes (WEBHOOK_CRON_SECRET), dedupe in `birthday_wishes_sent`; manual POST /api/aisensy/birthday/run-now (super admin).
 - Smoke test to 8968333413 (2026-10-14, after user created API campaigns): all 4 campaigns accepted by AiSensy (success=true).
 - Pending: 3 bugs (user rights, edit/delete user, cake image report default date), Batch E e1/e3/e4/e7, testing agent for Batch E.
+
+## 2026-10-14 — User rights, user edit/delete, Batch E completion (tested: iteration_14.json, 100% pass)
+- Page-level permissions (`pages` group, page_*). The ticked rights decide which menus/pages a user sees; role only seeds defaults (ROLE_DEFAULT_PAGES). Startup migration added defaults to existing users/templates.
+- Backend `require_role` also grants access via mapped permissions (`_ROUTE_PERM_RULES`).
+- PUT /api/users/{id} (edit details/role/outlets, optional reset perms to role); Users page Edit + Delete buttons; Factory Manager role option.
+- Delivery Person Report: GET /api/reports/delivery-persons + /delivery-report page (no ratings, per user).
+- Trusted-device 2FA: remember device 30 days (device_token), super admin Trusted Devices card in Settings with Remove.
+- 12-hour time everywhere (order lists, kitchen, factory, delivery, PDFs/KOT, Excel exports, activity logs).
+- Cake Image Report defaults to today's date.
+- Sidebar brand overlap fixed.
+- Backlog (Batch F): Old CRM SQL import, public order form, mobile audit, global outlet selector; AiSensy rating replies into CRM.

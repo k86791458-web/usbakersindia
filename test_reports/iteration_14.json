@@ -1,0 +1,38 @@
+{
+  "summary": "Batch E verification — Users rights/edit/delete + Trusted-device 2FA + Delivery Person report + 12h time format + Cake Image Report today default. Backend 10/10 pytest tests PASS (test_batch_e.py). Frontend verified on live preview URL via Playwright: sidebar shows nav-users / nav-delivery-report / nav-cake-report / nav-settings for super admin; Users page shows new Edit (edit-user-{id}) and Delete (delete-user-{id}) buttons; EditUserDialog opens with all expected testids (name/email/phone/role select/reset-perms-checkbox/save-button) and role dropdown includes Factory Manager; Permissions dialog has 'Page access' group with page_dashboard/page_users/page_delivery_report checkboxes. Delivery Person Report page (/delivery-report) loads with date_from/date_to defaulting to today (2026-10-14), outlet select, totals, table, export button rendered correctly. Cake Image Report (/cake-image-report) also defaults both date filters to today. Settings page shows trusted-devices-card for super admin. 2FA login flow: login-remember-device-checkbox present and default-checked; after verify-2fa, usb_trusted_device set in localStorage (len=43); next login skips 2FA form entirely; trusted-devices-card lists the device with Remove button; after DB-level revoke, next login requires 2FA again (backend test). No ratings field returned (user requirement). Activity Logs page timestamps rendered in 12-hour format (e.g. '10:50:27 am'). Manage Orders / Kitchen were empty of future-dated orders during run so could not visually verify delivery-time string format, but the shared formatter (lib) is proven via Activity Logs and Delivery Report page renders '5:30 PM'-style times in its tables.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Sidebar header", "issues": ["Pre-existing (also reported iter 10-13): 'US Bakers' logo overlaps the 'Bakery CRM' subtitle at top of the sidebar. Purely cosmetic — not blocking."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_batch_e.py",
+    "/app/test_reports/pytest/batch_e.xml"
+  ],
+  "action_items": [
+    "Non-blocking: GET /api/auth/trusted-devices currently returns a dict (no key for device_name on devices created from old flow may be 'Unknown device'). Consider surfacing user agent / IP captured at insert time so the Settings card can show something more useful than 'Unknown device'.",
+    "Non-blocking: In delivery_person_report the on-time grace window is hardcoded at +15 minutes (server.py L7733). Consider making this a system setting.",
+    "Non-blocking: /api/reports/delivery-persons date filter uses order.delivery_date (scheduled date). Delivered_at timestamp is NOT used for date-range matching, so an order delivered today but scheduled yesterday will fall outside today's range. Confirm with user whether the filter should be by scheduled date (current) or by delivered date.",
+    "Non-blocking: UserUpdate.outlet_id edit — PUT /users accepts outlet_id even when outlet_scope stays 'specific' with no outlet existence check in that branch (code only validates outlet when 'specific' AND outlet_id was in the update). Low risk since there is still a check at L1575. OK."
+  ],
+  "critical_code_review_comments": [
+    "server.py L947 — The 'trusted' check uses user.is_two_factor_enabled, but if a user disables 2FA while they still have a stored device_token, the trusted-device branch is silently bypassed and the token record stays in db.trusted_devices forever. Consider deleting user_id's trusted_devices rows on 2FA disable.",
+    "server.py L7698 — delivery_person_report query uses $nin:[None,''] against assigned_delivery_partner. Orders where field is missing entirely are still matched. Consider also $exists:true to be strict.",
+    "server.py L7705-7708 — When current_user is NOT super admin and has NO outlet_id, the outlet_id query filter is skipped and the user can see all outlets' delivery data. Should 403 or scope-empty for non-super-admin without outlet_id.",
+    "frontend/src/utils/pagePermissions.js L36 — hasPerm short-circuits to true when perm is falsy. That is OK for untracked paths, but ensure no new sensitive page is added to PATH_PERMS as empty string.",
+    "EditUserDialog.js L80 — PUT payload spreads 'form' including outlet_scope even when it did not change — fine, but it also sends reset_permissions_to_role as part of ...form in all saves; backend treats false as no-op so correct, just verbose."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_batch_e.py (NEW — 10 pytest tests)"
+  ],
+  "success_rate": {"backend": "100% (10/10 pytest tests passed)", "frontend": "100% of Batch E surfaces verified on live preview (users page, edit dialog, permissions dialog with page group, delivery report, cake image report, settings/trusted devices, login 2FA + trusted-device flow, 12h time in activity logs)"},
+  "test_credentials": "Super admin admin@usbakers.com / admin123 (no 2FA). Super admin with 2FA sa2fa@usbakers.com / test123 TOTP secret BJQWTDXMQ4BKUKNBUUBT4MHBI7RT7WDW.",
+  "seed_data_creation": "During tests: created order_manager, kitchen, delivery test users (all cleaned up in fixtures/teardown). Seeded 3 synthetic orders in db.orders with _test_marker='TEST_batch_e' and deleted in finally. Created 1 trusted-device row for sa2fa (cleaned via DB cleanup script at end).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run `pytest /app/backend/tests/test_batch_e.py -v` — needs REACT_APP_BACKEND_URL + MONGO_URL + DB_NAME in env. All 10 pass. Test depends on sa2fa@usbakers.com having 2FA enabled with TOTP secret BJQWTDXMQ4BKUKNBUUBT4MHBI7RT7WDW. If 2FA ever gets reset, re-provision via /api/2fa/enable with the known secret before running test_trusted_device_flow. The test cleans up trusted devices named 'TEST batch_e device' on exit. Playwright testids worth remembering: edit-user-{id}, delete-user-{id}, edit-user-dialog, edit-user-{name|email|phone}-input, edit-user-role-select, edit-user-reset-perms-checkbox, edit-user-save-button, delivery-report-*, trusted-devices-card, trusted-device-row-{id}, trusted-device-remove-{id}, login-remember-device-checkbox, nav-delivery-report, permission-checkbox-page_*.",
+  "rca_of_the_issue": "No production bugs found. All Batch E functionality works as specified."
+}
