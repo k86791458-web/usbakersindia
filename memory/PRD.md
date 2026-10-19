@@ -136,3 +136,4 @@ Pytest: `/app/backend/tests/test_batch_b.py` (6/6 pass). Testing report: `/app/t
 ## 2026-10-19 — AiSensy defaults seeded from code
 - AISENSY_API_KEY in backend/.env; startup `seed_aisensy_defaults` creates config + 4 templates only if missing (AISENSY_DEFAULT_TEMPLATES): crm_order_confirm_final (12), crm_order_updated_final (9: +name_on_cake, size), crm_order_feedback (3), crm_birthday (1).
 - Smoke test 8968333413: feedback + birthday sent; *_final campaigns return "Campaign does not exist" -> user must create AiSensy API campaigns with exactly those names (Live).
+- 2026-10-19: AiSensy key hardcoded in server.py (AISENSY_DEFAULT_API_KEY, env AISENSY_API_KEY overrides) per owner request. Legacy campaign names auto-renamed to *_final on startup. crm_order_updated_final live campaign accepts 7 params only (9 rejected) -> seeded with 7. All 4 campaigns verified sent to 8968333413.

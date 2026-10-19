@@ -7007,13 +7007,16 @@ async def send_whatsapp_notification(order_id: str, event_type: WhatsAppTemplate
     return await send_msg91_whatsapp(order_id, event_type)
 
 
+# Hardcoded on owner's request so a fresh deploy works without .env changes; AISENSY_API_KEY env overrides.
+AISENSY_DEFAULT_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY4MzgwZWFmOThiY2I5MGMwNDQ2ZjFlNCIsIm5hbWUiOiJVUyBCYWtlcnMiLCJhcHBOYW1lIjoiQWlTZW5zeSIsImNsaWVudElkIjoiNjZmMjc3NjZmMTk3NTgwYjc1NTRhNjk2IiwiYWN0aXZlUGxhbiI6IkJBU0lDX01PTlRITFkiLCJpYXQiOjE3OTE5NzIwMzJ9.z_Y7PvPVLvkqcHSN8chGMq7lLvxtIR1HOMRioDxN58w"
+AISENSY_LEGACY_CAMPAIGNS = {"crm_order_confirm": "order_placed", "crm_order_updated": "order_updated"}
+
 AISENSY_DEFAULT_TEMPLATES = [
     ("order_placed", "crm_order_confirm_final", ["customer_name", "order_number", "flavour", "size", "occasion",
                                                  "name_on_cake", "outlet_name", "delivery_date", "delivery_time",
                                                  "total_amount", "paid_amount", "pending_amount"]),
     ("order_updated", "crm_order_updated_final", ["customer_name", "order_number", "flavour", "delivery_date",
-                                                  "delivery_time", "total_amount", "pending_amount",
-                                                  "name_on_cake", "size"]),
+                                                  "delivery_time", "total_amount", "pending_amount"]),
     ("delivered", "crm_order_feedback", ["customer_name", "flavour", "order_number"]),
     ("birthday", "crm_birthday", ["customer_name"]),
 ]
@@ -7022,7 +7025,7 @@ AISENSY_DEFAULT_TEMPLATES = [
 @app.on_event("startup")
 async def seed_aisensy_defaults():
     now = datetime.now(timezone.utc).isoformat()
-    env_key = os.environ.get("AISENSY_API_KEY")
+    env_key = os.environ.get("AISENSY_API_KEY") or AISENSY_DEFAULT_API_KEY
     config = await db.aisensy_config.find_one({}, {"_id": 0})
     if not config and env_key:
         await db.aisensy_config.insert_one({
@@ -7032,7 +7035,11 @@ async def seed_aisensy_defaults():
     elif config and not config.get("api_key") and env_key:
         await db.aisensy_config.update_one({"id": config["id"]}, {"$set": {"api_key": env_key, "updated_at": now}})
     for event, campaign, params in AISENSY_DEFAULT_TEMPLATES:
-        if not await db.aisensy_templates.find_one({"event_type": event}):
+        existing = await db.aisensy_templates.find_one({"event_type": event}, {"_id": 0})
+        if existing and existing.get("campaign_name") in AISENSY_LEGACY_CAMPAIGNS:
+            await db.aisensy_templates.update_one({"event_type": event}, {"$set": {
+                "campaign_name": campaign, "template_params": params, "is_enabled": True, "updated_at": now}})
+        if not existing:
             await db.aisensy_templates.insert_one({
                 "id": str(uuid.uuid4()), "event_type": event, "campaign_name": campaign,
                 "template_params": params, "tags": [], "is_enabled": True, "created_at": now, "updated_at": now,
