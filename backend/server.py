@@ -7007,6 +7007,38 @@ async def send_whatsapp_notification(order_id: str, event_type: WhatsAppTemplate
     return await send_msg91_whatsapp(order_id, event_type)
 
 
+AISENSY_DEFAULT_TEMPLATES = [
+    ("order_placed", "crm_order_confirm_final", ["customer_name", "order_number", "flavour", "size", "occasion",
+                                                 "name_on_cake", "outlet_name", "delivery_date", "delivery_time",
+                                                 "total_amount", "paid_amount", "pending_amount"]),
+    ("order_updated", "crm_order_updated_final", ["customer_name", "order_number", "flavour", "delivery_date",
+                                                  "delivery_time", "total_amount", "pending_amount",
+                                                  "name_on_cake", "size"]),
+    ("delivered", "crm_order_feedback", ["customer_name", "flavour", "order_number"]),
+    ("birthday", "crm_birthday", ["customer_name"]),
+]
+
+
+@app.on_event("startup")
+async def seed_aisensy_defaults():
+    now = datetime.now(timezone.utc).isoformat()
+    env_key = os.environ.get("AISENSY_API_KEY")
+    config = await db.aisensy_config.find_one({}, {"_id": 0})
+    if not config and env_key:
+        await db.aisensy_config.insert_one({
+            "id": str(uuid.uuid4()), "api_key": env_key, "default_source": "crm",
+            "default_user_name": "US Bakers", "is_active": True, "created_at": now, "updated_at": now,
+        })
+    elif config and not config.get("api_key") and env_key:
+        await db.aisensy_config.update_one({"id": config["id"]}, {"$set": {"api_key": env_key, "updated_at": now}})
+    for event, campaign, params in AISENSY_DEFAULT_TEMPLATES:
+        if not await db.aisensy_templates.find_one({"event_type": event}):
+            await db.aisensy_templates.insert_one({
+                "id": str(uuid.uuid4()), "event_type": event, "campaign_name": campaign,
+                "template_params": params, "tags": [], "is_enabled": True, "created_at": now, "updated_at": now,
+            })
+
+
 @app.on_event("startup")
 async def startup_init_storage():
     try:

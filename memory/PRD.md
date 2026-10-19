@@ -132,3 +132,7 @@ Pytest: `/app/backend/tests/test_batch_b.py` (6/6 pass). Testing report: `/app/t
 - Fix: frontend falls back to role default pages when user has no page_* rights (utils/pagePermissions.js); users with zero allowed pages go to /no-access page with Logout.
 - VPS notes: restart backend after pull (runs page-rights migration); .env needs EMERGENT_LLM_KEY (object storage + analytics), WEBHOOK_CRON_SECRET, PUBLIC_BASE_URL; birthday cron must be a VPS crontab hitting POST /api/cron/birthday-wishes at 00:00 IST.
 - Pending: KOT footer branch-name bug — waiting for user's KOT photo.
+
+## 2026-10-19 — AiSensy defaults seeded from code
+- AISENSY_API_KEY in backend/.env; startup `seed_aisensy_defaults` creates config + 4 templates only if missing (AISENSY_DEFAULT_TEMPLATES): crm_order_confirm_final (12), crm_order_updated_final (9: +name_on_cake, size), crm_order_feedback (3), crm_birthday (1).
+- Smoke test 8968333413: feedback + birthday sent; *_final campaigns return "Campaign does not exist" -> user must create AiSensy API campaigns with exactly those names (Live).
