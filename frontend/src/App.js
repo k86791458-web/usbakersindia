@@ -31,6 +31,7 @@ import IncentiveReport from './pages/IncentiveReport';
 import CakeImageReport from './pages/CakeImageReport';
 import DeliveryReport from './pages/DeliveryReport';
 import { firstAllowedPath } from './utils/pagePermissions';
+import NoAccess from './pages/NoAccess';
 import FactoryDashboard from './pages/FactoryDashboard';
 import DeletedOrders from './pages/DeletedOrders';
 import ChangesLog from './pages/ChangesLog';
@@ -276,6 +277,7 @@ const AppRoutes = () => {
           </ProtectedRoute>
         }
       />
+      <Route path="/no-access" element={<NoAccess />} />
       <Route
         path="/delivery-report"
         element={

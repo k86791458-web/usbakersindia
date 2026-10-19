@@ -7141,7 +7141,8 @@ async def migrate_page_permissions():
     async for u in db.users.find({}, {"_id": 0, "id": 1, "role": 1, "permissions": 1}):
         perms = u.get("permissions") or []
         if not any(p.startswith("page_") for p in perms):
-            await db.users.update_one({"id": u["id"]}, {"$set": {"permissions": with_default_pages(u.get("role"), perms)}})
+            if u.get("id"):
+                await db.users.update_one({"id": u["id"]}, {"$set": {"permissions": with_default_pages(u.get("role"), perms)}})
     async for t in db.role_permissions.find({}, {"_id": 0}):
         perms = t.get("permissions") or []
         if not any(p.startswith("page_") for p in perms):

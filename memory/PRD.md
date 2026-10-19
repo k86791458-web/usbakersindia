@@ -126,3 +126,9 @@ Pytest: `/app/backend/tests/test_batch_b.py` (6/6 pass). Testing report: `/app/t
 - Cake Image Report defaults to today's date.
 - Sidebar brand overlap fixed.
 - Backlog (Batch F): Old CRM SQL import, public order form, mobile audit, global outlet selector; AiSensy rating replies into CRM.
+
+## 2026-10-19 — Blank screen for non-admin logins (VPS) fixed
+- Root cause: logged-in user with no page_* rights -> firstAllowedPath returned '/login' -> /login redirected to itself (infinite redirect, blank page). Happens when backend wasn't restarted/migrated or role has no defaults.
+- Fix: frontend falls back to role default pages when user has no page_* rights (utils/pagePermissions.js); users with zero allowed pages go to /no-access page with Logout.
+- VPS notes: restart backend after pull (runs page-rights migration); .env needs EMERGENT_LLM_KEY (object storage + analytics), WEBHOOK_CRON_SECRET, PUBLIC_BASE_URL; birthday cron must be a VPS crontab hitting POST /api/cron/birthday-wishes at 00:00 IST.
+- Pending: KOT footer branch-name bug — waiting for user's KOT photo.

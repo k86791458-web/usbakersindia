@@ -32,8 +32,27 @@ export const PATH_PERMS = {
   '/settings': 'page_settings',
 };
 
+const ORDER_PAGES = ['page_dashboard', 'page_new_order', 'page_hold_orders', 'page_pending_orders',
+  'page_credit_orders', 'page_complementary_orders', 'page_manage_orders', 'page_deleted_orders',
+  'page_payments', 'page_customers', 'page_reports'];
+
+// Mirrors backend ROLE_DEFAULT_PAGES; used when a user has no page_* rights saved yet.
+const ROLE_DEFAULT_PAGES = {
+  outlet_admin: [...ORDER_PAGES, 'page_cake_image_report', 'page_delivery_report'],
+  order_manager: ORDER_PAGES,
+  factory_manager: ['page_factory', 'page_kitchen', 'page_new_order', 'page_reports'],
+  kitchen: ['page_kitchen', 'page_reports'],
+  delivery: ['page_delivery'],
+  accounts: ['page_payments', 'page_reports'],
+};
+
+const effectivePerms = (user) => {
+  const perms = user.permissions || [];
+  return perms.some(p => p.startsWith('page_')) ? perms : [...perms, ...(ROLE_DEFAULT_PAGES[user.role] || ORDER_PAGES)];
+};
+
 export const hasPerm = (user, perm) =>
-  !!user && (user.role === 'super_admin' || !perm || (user.permissions || []).includes(perm));
+  !!user && (user.role === 'super_admin' || !perm || effectivePerms(user).includes(perm));
 
 export const canAccessPath = (user, path) => hasPerm(user, PATH_PERMS[path.split('?')[0]]);
 
@@ -41,5 +60,5 @@ const LANDING_ORDER = ['/dashboard', '/kitchen', '/factory', '/delivery', '/new-
 
 export const firstAllowedPath = (user) => {
   const ordered = [...LANDING_ORDER, ...Object.keys(PATH_PERMS)];
-  return ordered.find(p => canAccessPath(user, p)) || '/login';
+  return ordered.find(p => canAccessPath(user, p)) || '/no-access';
 };
