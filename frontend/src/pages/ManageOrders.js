@@ -3132,7 +3132,7 @@ const ManageOrders = () => {
             setEditImageEditorOpen(false);
             try {
               const formData = new FormData();
-              formData.append('file', new File([blob], `edited_${Date.now()}.png`, { type: 'image/png' }));
+              formData.append('file', new File([blob], `edited_${Date.now()}.jpg`, { type: 'image/jpeg' }));
               const res = await axios.post(`${API_URL}/api/upload-image`, formData, {
                 headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'multipart/form-data' }
               });

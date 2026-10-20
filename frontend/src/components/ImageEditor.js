@@ -101,9 +101,12 @@ const ImageEditor = ({ open, file, onCancel, onConfirm }) => {
       sh = completedCrop.height * scaleY;
     }
     const out = document.createElement('canvas');
-    out.width = Math.max(1, Math.round(sw));
-    out.height = Math.max(1, Math.round(sh));
+    const downscale = Math.min(1, 1600 / Math.max(sw, sh));
+    out.width = Math.max(1, Math.round(sw * downscale));
+    out.height = Math.max(1, Math.round(sh * downscale));
     const ctx = out.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, out.width, out.height);
     ctx.drawImage(img, sx, sy, sw, sh, 0, 0, out.width, out.height);
 
     // Re-draw strokes scaled to the cropped natural area
@@ -128,7 +131,7 @@ const ImageEditor = ({ open, file, onCancel, onConfirm }) => {
         ctx.stroke();
       });
     }
-    return await new Promise((resolve) => out.toBlob((b) => resolve(b), 'image/png', 0.92));
+    return await new Promise((resolve) => out.toBlob((b) => resolve(b), 'image/jpeg', 0.85));
   };
 
   const handleConfirm = async () => {

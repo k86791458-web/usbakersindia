@@ -230,16 +230,22 @@ const NewOrder = () => {
   const handleImageUpload = async (e, type = 'primary') => {
     const file = e.target.files[0];
     if (!file) return;
+    e.target.value = '';
+    // Browsers can't preview HEIC, so upload as-is; the server converts it to JPEG
+    if (/\.(heic|heif)$/i.test(file.name) || /heic|heif/i.test(file.type)) {
+      await uploadEditedImage(file, type, file.name);
+      return;
+    }
     // Open the editor first so user can crop / annotate before upload
     setPendingImageFile({ file, type });
     setEditorOpen(true);
     e.target.value = '';
   };
 
-  const uploadEditedImage = async (blob, type) => {
+  const uploadEditedImage = async (blob, type, name) => {
     setUploadingImage(true);
     const formDataUpload = new FormData();
-    formDataUpload.append('file', new File([blob], `edited_${Date.now()}.png`, { type: 'image/png' }));
+    formDataUpload.append('file', name ? blob : new File([blob], `edited_${Date.now()}.jpg`, { type: 'image/jpeg' }));
 
     try {
       const response = await axios.post(`${API}/upload-image`, formDataUpload, {
@@ -256,7 +262,10 @@ const NewOrder = () => {
         });
       }
     } catch (error) {
-      setError(error.response?.data?.detail || 'Image upload failed');
+      const status = error.response?.status;
+      setError(status === 413
+        ? 'Image too large for the server. Ask your server admin to raise the upload size limit (nginx client_max_body_size 25M).'
+        : (error.response?.data?.detail || `Image upload failed${status ? ` (error ${status})` : ': server not reachable'}`));
     } finally {
       setUploadingImage(false);
     }
