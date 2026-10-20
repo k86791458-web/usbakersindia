@@ -2490,8 +2490,8 @@ async def upload_image(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Image upload failed: {str(e)}")
-        raise HTTPException(status_code=500, detail="Image upload failed")
+        logger.exception("Image upload failed")
+        raise HTTPException(status_code=500, detail=f"Image upload failed: {type(e).__name__}: {e}")
 
 # ==================== ORDER MANAGEMENT ====================
 
