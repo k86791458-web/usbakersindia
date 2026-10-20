@@ -11,7 +11,10 @@ def init_storage(force: bool = False):
     global _storage_key
     if _storage_key and not force:
         return _storage_key
-    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": os.environ.get("EMERGENT_LLM_KEY")}, timeout=30)
+    key = os.environ.get("EMERGENT_LLM_KEY")
+    if not key:
+        raise RuntimeError("EMERGENT_LLM_KEY not set")
+    resp = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": key}, timeout=15)
     resp.raise_for_status()
     _storage_key = resp.json()["storage_key"]
     return _storage_key

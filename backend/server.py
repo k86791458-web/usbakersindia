@@ -2481,12 +2481,7 @@ async def upload_image(
             file_extension = (file.filename or 'img').split('.')[-1].lower()
             unique_filename = f"{uuid.uuid4()}.{file_extension}"
             content_type = file.content_type or "image/jpeg"
-        await asyncio.to_thread(put_upload, unique_filename, contents, content_type)
-        await db.files.insert_one({
-            "id": str(uuid.uuid4()), "storage_path": unique_filename, "original_filename": file.filename,
-            "content_type": content_type, "size": len(contents), "is_deleted": False,
-            "uploaded_by": current_user.id, "created_at": datetime.now(timezone.utc).isoformat(),
-        })
+        await save_upload(unique_filename, contents, content_type, file.filename, current_user.id)
 
         image_url = f"/api/uploads/{unique_filename}"
         # Return both keys for frontend compatibility (some callers use file_url)
@@ -7300,12 +7295,7 @@ async def upload_voice_instruction(
         content = await file.read()
         rel_path = f"voice-instructions/{unique_filename}"
         content_type = file.content_type or "audio/webm"
-        await asyncio.to_thread(put_upload, rel_path, content, content_type)
-        await db.files.insert_one({
-            "id": str(uuid.uuid4()), "storage_path": rel_path, "original_filename": file.filename,
-            "content_type": content_type, "size": len(content), "is_deleted": False,
-            "uploaded_by": current_user.id, "created_at": datetime.now(timezone.utc).isoformat(),
-        })
+        await save_upload(rel_path, content, content_type, file.filename, current_user.id)
         
         # Return URL
         file_url = f"/api/uploads/voice-instructions/{unique_filename}"
@@ -7436,6 +7426,22 @@ async def delete_change_log(
 
 # Include the router in the main app
 # (Moved to bottom of file to register routes defined later, e.g. /activity-logs)
+
+async def save_upload(rel_path: str, data: bytes, content_type: str, original_name: Optional[str], user_id: str):
+    # Cloud object storage when available (Emergent hosting); local uploads/ folder otherwise (self-hosted VPS).
+    try:
+        await asyncio.to_thread(put_upload, rel_path, data, content_type)
+        await db.files.insert_one({
+            "id": str(uuid.uuid4()), "storage_path": rel_path, "original_filename": original_name,
+            "content_type": content_type, "size": len(data), "is_deleted": False,
+            "uploaded_by": user_id, "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        logger.warning(f"Object storage unavailable, saving upload locally: {e}")
+        local = ROOT_DIR / "uploads" / rel_path
+        local.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(local.write_bytes, data)
+
 
 @api_router.get("/uploads/{path:path}")
 async def serve_upload(path: str):
